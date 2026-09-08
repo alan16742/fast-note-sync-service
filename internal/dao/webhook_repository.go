@@ -49,12 +49,6 @@ func webhookToDomain(item *model.WebhookSubscription) (*domain.WebhookSubscripti
 	if item == nil {
 		return nil, nil
 	}
-	var actions []domain.WebhookAction
-	if item.Actions != "" {
-		if err := json.Unmarshal([]byte(item.Actions), &actions); err != nil {
-			return nil, err
-		}
-	}
 	var headers map[string]string
 	if item.Headers != "" {
 		if err := json.Unmarshal([]byte(item.Headers), &headers); err != nil {
@@ -62,9 +56,7 @@ func webhookToDomain(item *model.WebhookSubscription) (*domain.WebhookSubscripti
 		}
 	}
 	return &domain.WebhookSubscription{
-		ID: item.ID, UID: item.UID, Enabled: item.Enabled == 1, Provider: item.Provider, Mode: item.Mode, Timezone: item.Timezone, URL: item.URL, Method: item.Method, Headers: headers, Secret: item.Secret,
-		VaultID: item.VaultID, Actions: actions, PathPrefix: item.PathPrefix, PathGlob: item.PathGlob,
-		BodyMatcher:   domain.WebhookBodyMatcher{Substring: item.BodySubstring, Regex: item.BodyRegex, MaxBytes: int(item.BodyMaxBytes)},
+		ID: item.ID, UID: item.UID, Enabled: item.Enabled == 1, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: headers, Secret: item.Secret,
 		TitleTemplate: item.TitleTemplate, BodyTemplate: item.BodyTemplate,
 		CreatedAt: time.Time(item.CreatedAt), UpdatedAt: time.Time(item.UpdatedAt),
 	}, nil
@@ -73,10 +65,6 @@ func webhookToDomain(item *model.WebhookSubscription) (*domain.WebhookSubscripti
 func webhookToModel(item *domain.WebhookSubscription) (*model.WebhookSubscription, error) {
 	if item == nil {
 		return nil, nil
-	}
-	actions, err := json.Marshal(item.Actions)
-	if err != nil {
-		return nil, err
 	}
 	headers, err := json.Marshal(item.Headers)
 	if err != nil {
@@ -87,9 +75,7 @@ func webhookToModel(item *domain.WebhookSubscription) (*model.WebhookSubscriptio
 		enabled = 1
 	}
 	return &model.WebhookSubscription{
-		ID: item.ID, UID: item.UID, Enabled: enabled, Provider: item.Provider, Mode: item.Mode, Timezone: item.Timezone, URL: item.URL, Method: item.Method, Headers: string(headers), Secret: item.Secret, VaultID: item.VaultID,
-		Actions: string(actions), PathPrefix: item.PathPrefix, PathGlob: item.PathGlob,
-		BodySubstring: item.BodyMatcher.Substring, BodyRegex: item.BodyMatcher.Regex, BodyMaxBytes: int64(item.BodyMatcher.MaxBytes),
+		ID: item.ID, UID: item.UID, Enabled: enabled, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: string(headers), Secret: item.Secret,
 		TitleTemplate: item.TitleTemplate, BodyTemplate: item.BodyTemplate,
 		CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
 	}, nil
@@ -102,18 +88,6 @@ func (r *webhookRepository) List(ctx context.Context, uid int64) ([]*domain.Webh
 	}
 	var items []*model.WebhookSubscription
 	if err := db.WithContext(ctx).Where("uid = ?", uid).Order("id desc").Find(&items).Error; err != nil {
-		return nil, err
-	}
-	return webhookDomains(items)
-}
-
-func (r *webhookRepository) ListEnabled(ctx context.Context, uid int64) ([]*domain.WebhookSubscription, error) {
-	db, err := r.db(ctx, uid)
-	if err != nil {
-		return nil, err
-	}
-	var items []*model.WebhookSubscription
-	if err := db.WithContext(ctx).Where("uid = ? AND enabled = ?", uid, 1).Order("id desc").Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return webhookDomains(items)

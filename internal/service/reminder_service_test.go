@@ -38,7 +38,7 @@ type reminderNotes struct {
 	note *domain.Note
 }
 
-func (n *reminderNotes) ListByUpdatedTimestampMeta(_ context.Context, stamp, vault, uid int64) ([]*domain.Note, error) {
+func (n *reminderNotes) ListByUpdatedTimestampMeta(_ context.Context, stamp, _, _ int64) ([]*domain.Note, error) {
 	if n.note == nil || n.note.UpdatedTimestamp <= stamp {
 		return nil, nil
 	}
@@ -62,14 +62,15 @@ func (s *reminderSender) Send(_ context.Context, _, _ string, message notificati
 }
 
 type reminderTestEnv struct {
-	svc           *ReminderService
-	source        *reminderNotes
-	vaults        *reminderVaults
-	subscriptions domain.WebhookRepository
-	jobs          domain.ReminderRepository
-	sender        *reminderSender
-	start         time.Time
-	subscription  *domain.WebhookSubscription
+	svc      *ReminderService
+	source   *reminderNotes
+	vaults   *reminderVaults
+	triggers domain.AutomationRepository
+	webhooks domain.WebhookRepository
+	jobs     domain.ReminderRepository
+	sender   *reminderSender
+	start    time.Time
+	trigger  *domain.AutomationTrigger
 }
 
 func newReminderTestEnv(t *testing.T) *reminderTestEnv {
@@ -81,28 +82,30 @@ func newReminderTestEnv(t *testing.T) *reminderTestEnv {
 	require.NoError(t, err)
 	d := dao.New(db, ctx, dao.WithConfig(&cfg), dao.WithUserDatabaseConfig(&cfg), dao.WithLogger(zap.NewNop()))
 	t.Cleanup(func() {
-		for _, key := range []string{"", "user_webhook_1", "user_reminder_1", "user_webhook_2", "user_reminder_2"} {
+		for _, key := range []string{"", "user_webhook_1", "user_automation_1", "user_reminder_1", "user_webhook_2", "user_automation_2", "user_reminder_2"} {
 			if sqlDB, err := d.ResolveDB(key).DB(); err == nil {
 				_ = sqlDB.Close()
 			}
 		}
 	})
-	subscriptions := dao.NewWebhookRepository(d)
-	start := time.Date(2026, 9, 6, 14, 40, 0, 0, time.UTC)
-	subscription, err := subscriptions.Save(ctx, &domain.WebhookSubscription{UID: 1, Enabled: true, Provider: "bark", Mode: "reminder", Timezone: "Asia/Shanghai", Secret: "test-key"}, 1)
+	webhooks := dao.NewWebhookRepository(d)
+	target, err := webhooks.Save(ctx, &domain.WebhookSubscription{UID: 1, Enabled: true, Provider: "bark", Secret: "test-key"}, 1)
 	require.NoError(t, err, "first operation must migrate before saving")
-	// Repository timestamps use the wall clock; make the fixture's creation time
-	// explicit so reminder scheduling uses the fake clock deterministically.
-	require.NoError(t, d.ResolveDB("user_webhook_1").Table("webhook_subscription").Where("id = ?", subscription.ID).Update("created_at", start).Error)
-	subscription, err = subscriptions.GetByID(ctx, subscription.ID, 1)
+	start := time.Date(2026, 9, 6, 14, 40, 0, 0, time.UTC)
+	triggers := dao.NewAutomationRepository(d)
+	trigger, err := triggers.Save(ctx, &domain.AutomationTrigger{UID: 1, Enabled: true, EventType: domain.AutomationEventTodo, Timezone: "Asia/Shanghai", Actions: []domain.AutomationAction{{Type: domain.AutomationTargetWebhook, ConfigID: target.ID}}}, 1)
+	require.NoError(t, err)
+	require.NoError(t, d.ResolveDB("user_automation_1").Table("automation_trigger").Where("id = ?", trigger.ID).Update("created_at", start).Error)
+	trigger, err = triggers.GetByID(ctx, trigger.ID, 1)
 	require.NoError(t, err)
 	notes := &reminderNotes{note: &domain.Note{ID: 1, VaultID: 1, Path: "todo.md", Content: "- [ ] todo @(2026-09-06 22:45; remind=0,+1h)", UpdatedTimestamp: start.UnixMilli()}}
 	vaults := &reminderVaults{}
 	jobs := dao.NewReminderRepository(d)
 	sender := &reminderSender{}
-	svc := NewReminderService(reminderUsers{}, vaults, notes, subscriptions, jobs, zap.NewNop())
-	svc.senders["bark"] = sender
-	return &reminderTestEnv{svc, notes, vaults, subscriptions, jobs, sender, start, subscription}
+	webhookSvc := NewWebhookService(webhooks).(*webhookService)
+	webhookSvc.senders["bark"] = sender
+	svc := NewReminderService(reminderUsers{}, vaults, notes, triggers, webhookSvc, jobs, zap.NewNop())
+	return &reminderTestEnv{svc: svc, source: notes, vaults: vaults, triggers: triggers, webhooks: webhooks, jobs: jobs, sender: sender, start: start, trigger: trigger}
 }
 
 func TestReminderPersistenceCompletionAndTenantIsolation(t *testing.T) {
@@ -115,18 +118,18 @@ func TestReminderPersistenceCompletionAndTenantIsolation(t *testing.T) {
 	require.Len(t, env.sender.calls, 1)
 	require.Equal(t, "todo", env.sender.calls[0].Title)
 	require.Contains(t, env.sender.calls[0].URL, "obsidian://open?")
-	restarted := NewReminderService(reminderUsers{}, env.vaults, env.source, env.subscriptions, env.jobs, zap.NewNop())
-	restarted.senders["bark"] = env.sender
+	restarted := NewReminderService(reminderUsers{}, env.vaults, env.source, env.triggers, NewWebhookService(env.webhooks), env.jobs, zap.NewNop())
+	restarted.webhooks.(*webhookService).senders["bark"] = env.sender
 	require.NoError(t, restarted.Tick(ctx, due.Add(time.Second)))
 	require.Len(t, env.sender.calls, 1, "restart must preserve delivery progress")
 	env.source.note.Content = "- [x] todo @(2026-09-06 22:45; remind=0,+1h)"
 	env.source.note.UpdatedTimestamp = due.Add(time.Minute).UnixMilli()
 	require.NoError(t, restarted.Tick(ctx, due.Add(time.Hour)))
 	require.Len(t, env.sender.calls, 1, "completion cancels future sends")
-	rows, err := env.jobs.ListDue(ctx, 2, env.subscription.ID, due.Add(time.Hour).Unix(), 100)
+	rows, err := env.jobs.ListDue(ctx, 2, env.trigger.ID, due.Add(time.Hour).Unix(), 100)
 	require.NoError(t, err)
 	require.Empty(t, rows)
-	other, err := env.subscriptions.GetByID(ctx, env.subscription.ID, 2)
+	other, err := env.triggers.GetByID(ctx, env.trigger.ID, 2)
 	require.NoError(t, err)
 	require.Nil(t, other)
 }
@@ -149,8 +152,8 @@ func TestReminderRetriesAndRechecksSource(t *testing.T) {
 			case "deleted":
 				env.source.note = nil
 			case "disabled":
-				env.subscription.Enabled = false
-				_, err := env.subscriptions.Save(ctx, env.subscription, 1)
+				env.trigger.Enabled = false
+				_, err := env.triggers.Save(ctx, env.trigger, 1)
 				require.NoError(t, err)
 			case "vault_deleted":
 				env.vaults.deleted = true
@@ -166,7 +169,7 @@ func TestReminderLeasePreventsConcurrentDelivery(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, env.svc.Tick(ctx, env.start))
 	now := env.start.Add(5 * time.Minute).Unix()
-	rows, err := env.jobs.ListDue(ctx, 1, env.subscription.ID, now, 10)
+	rows, err := env.jobs.ListDue(ctx, 1, env.trigger.ID, now, 10)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	claimed, err := env.jobs.Claim(ctx, 1, rows[0].ID, now, "first")
@@ -180,21 +183,19 @@ func TestReminderLeasePreventsConcurrentDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, claimed)
 	require.NoError(t, env.jobs.Finish(ctx, 1, rows[0].ID, "first", 0, 0))
-	rows, err = env.jobs.ListDue(ctx, 1, env.subscription.ID, now+61, 10)
+	rows, err = env.jobs.ListDue(ctx, 1, env.trigger.ID, now+61, 10)
 	require.NoError(t, err)
 	require.Empty(t, rows)
 }
 
 func TestWebhookRepositoryContextAndRoundTrip(t *testing.T) {
 	env := newReminderTestEnv(t)
-	item, err := NewWebhookService(env.subscriptions).Save(context.Background(), 1, &dto.WebhookSubscriptionRequest{Provider: "bark", Mode: "reminder", Timezone: "UTC", Secret: "new-key", TitleTemplate: "{{title}}", BodyTemplate: "{{vault}}/{{path}}"})
+	item, err := NewWebhookService(env.webhooks).Save(context.Background(), 1, &dto.WebhookSubscriptionRequest{Provider: "bark", Secret: "new-key", TitleTemplate: "{{title}}", BodyTemplate: "{{vault}}/{{path}}"})
 	require.NoError(t, err)
-	require.Equal(t, "reminder", item.Mode)
-	require.Equal(t, "UTC", item.Timezone)
 	require.Equal(t, "{{title}}", item.TitleTemplate)
 	require.Equal(t, "{{vault}}/{{path}}", item.BodyTemplate)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = env.subscriptions.List(ctx, 1)
+	_, err = env.webhooks.List(ctx, 1)
 	require.ErrorIs(t, err, context.Canceled)
 }

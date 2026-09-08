@@ -58,7 +58,6 @@ func newBackupSvc(
 		vaultRepo:      vaultRepo,
 		storageService: storageSvc,
 		logger:         zap.NewNop(),
-		syncTimers:     make(map[int64]*time.Timer),
 		runningTasks:   make(map[int64]context.CancelFunc),
 	}
 }

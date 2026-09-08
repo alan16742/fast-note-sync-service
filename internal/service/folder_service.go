@@ -44,24 +44,26 @@ type folderService struct {
 	fileRepo       domain.FileRepository
 	vaultService   VaultService
 	sf             *singleflight.Group // Singleflight group for concurrency control // 用于并发控制的 Singleflight 组
-	backupService  BackupService
-	gitSyncService GitSyncService
 	pool           *workerpool.Pool
 	syncLogService SyncLogService
+	eventPublisher NoteEventPublisher
 	clientType     string
 	clientName     string
 	clientVersion  string
 }
 
-func NewFolderService(folderRepo domain.FolderRepository, noteRepo domain.NoteRepository, fileRepo domain.FileRepository, vaultSvc VaultService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, pool *workerpool.Pool) FolderService {
+func NewFolderService(folderRepo domain.FolderRepository, noteRepo domain.NoteRepository, fileRepo domain.FileRepository, vaultSvc VaultService, syncLogSvc SyncLogService, pool *workerpool.Pool, publishers ...NoteEventPublisher) FolderService {
+	var eventPublisher NoteEventPublisher
+	if len(publishers) > 0 {
+		eventPublisher = publishers[0]
+	}
 	return &folderService{
 		folderRepo:     folderRepo,
 		noteRepo:       noteRepo,
 		fileRepo:       fileRepo,
 		vaultService:   vaultSvc,
-		backupService:  backupSvc,
-		gitSyncService: gitSyncSvc,
 		syncLogService: syncLogSvc,
+		eventPublisher: eventPublisher,
 		pool:           pool,
 		sf:             &singleflight.Group{},
 	}
@@ -153,10 +155,6 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
-	if s.backupService != nil {
-		s.backupService.NotifyUpdated(uid)
-	}
-
 	if s.syncLogService != nil {
 		s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionCreate, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
 	}
@@ -194,10 +192,6 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 	_, err = s.folderRepo.Update(ctx, f, uid)
 	if err != nil {
 		return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
-	}
-
-	if s.backupService != nil {
-		s.backupService.NotifyUpdated(uid)
 	}
 
 	if s.syncLogService != nil {
@@ -257,6 +251,7 @@ func (s *folderService) DeleteTree(ctx context.Context, uid int64, params *dto.F
 		if s.syncLogService != nil {
 			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionSoftDelete, "", n.Path, n.PathHash, s.clientType, s.clientName, s.clientVersion, n.Size)
 		}
+		publishNoteChangeEvent(ctx, s.eventPublisher, uid, vaultID, params.Vault, domain.WebhookActionDelete, n, "", "action")
 	}
 
 	for _, f := range files {
@@ -290,12 +285,6 @@ func (s *folderService) DeleteTree(ctx context.Context, uid int64, params *dto.F
 		}
 	}
 
-	if s.backupService != nil {
-		s.backupService.NotifyUpdated(uid)
-	}
-	if s.gitSyncService != nil && (len(notes) > 0 || len(files) > 0) {
-		s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
 	return s.domainToDTO(root), nil
 }
 
@@ -399,10 +388,6 @@ func (s *folderService) Rename(ctx context.Context, uid int64, params *dto.Folde
 	newFolderCreated, err := s.folderRepo.GetByID(ctx, fid, uid)
 	if err != nil {
 		return nil, nil, code.ErrorDBQuery.WithDetails(err.Error())
-	}
-
-	if s.backupService != nil {
-		s.backupService.NotifyUpdated(uid)
 	}
 
 	if s.syncLogService != nil {
@@ -557,6 +542,7 @@ func (s *folderService) ListFiles(ctx context.Context, uid int64, params *dto.Fo
 // A proper fix would be to either:
 //   - Use singleflight keyed by (vaultID, path) to coalesce concurrent creates
 //   - Add a UNIQUE constraint on (vault_id, path_hash) and handle conflict
+//
 // ensurePathFIDSingle performs the underlying lookup or creation of a folder.
 // ensurePathFIDSingle 执行底层的文件夹查询或创建。
 func (s *folderService) ensurePathFIDSingle(ctx context.Context, uid int64, vaultID int64, pathHash string, currentPath string, currentFID int64, level int) (any, error) {

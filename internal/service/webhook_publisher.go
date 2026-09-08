@@ -21,11 +21,15 @@ func (s *noteService) publishNoteChange(ctx context.Context, uid, vaultID int64,
 }
 
 func (s *noteService) publishNoteChangeWithVault(ctx context.Context, uid, vaultID int64, vaultName string, action domain.WebhookAction, note *domain.Note, oldPath string, changedFields ...string) {
-	if s.eventPublisher == nil || note == nil {
+	publishNoteChangeEvent(ctx, s.eventPublisher, uid, vaultID, vaultName, action, note, oldPath, changedFields...)
+}
+
+func publishNoteChangeEvent(ctx context.Context, publisher NoteEventPublisher, uid, vaultID int64, vaultName string, action domain.WebhookAction, note *domain.Note, oldPath string, changedFields ...string) {
+	if publisher == nil || note == nil {
 		return
 	}
 
-	s.eventPublisher.PublishNoteChange(ctx, &domain.ContentChangeEvent{
+	publisher.PublishNoteChange(ctx, &domain.ContentChangeEvent{
 		ID:            uuid.NewString(),
 		OccurredAt:    time.Now().UTC(),
 		UID:           uid,

@@ -43,6 +43,17 @@ func TestAutomationTriggerMatchesUnrestrictedFileEvent(t *testing.T) {
 	}
 }
 
+func TestAutomationTriggerMatchesRenameByOldOrNewPath(t *testing.T) {
+	trigger := &domain.AutomationTrigger{
+		Enabled: true, EventType: domain.AutomationEventFile, PathGlob: "Projects/*.md",
+	}
+	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventFile, Action: "rename", Path: "Archive/notes.txt", OldPath: "Projects/notes.md",
+	}) {
+		t.Fatal("rename should match either the old or new path")
+	}
+}
+
 func TestAutomationFromRequestValidatesTimeAndTargets(t *testing.T) {
 	trigger, err := automationFromRequest(&dto.AutomationTriggerRequest{
 		Name: "nightly git", Enabled: true, EventType: domain.AutomationEventTime,
@@ -61,5 +72,47 @@ func TestAutomationFromRequestValidatesTimeAndTargets(t *testing.T) {
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetBackup, ConfigID: 1}},
 	}, 9); err == nil {
 		t.Fatal("invalid cron should be rejected")
+	}
+}
+
+func TestAutomationFromRequestTodoKeepsTriggerConditionsAndOnlyNotificationTargets(t *testing.T) {
+	trigger, err := automationFromRequest(&dto.AutomationTriggerRequest{
+		Name: "todo reminders", Enabled: true, EventType: domain.AutomationEventTodo,
+		VaultID: 3, Timezone: "UTC", ContentContains: "@(", PathGlob: "Projects/*.md",
+		EventActions: []string{"create"},
+		Actions:      []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 8}},
+	}, 9)
+	if err != nil {
+		t.Fatalf("valid todo trigger rejected: %v", err)
+	}
+	if trigger.Timezone != "UTC" || trigger.ContentContains != "@(" || trigger.PathGlob != "Projects/*.md" {
+		t.Fatalf("todo trigger conditions were not preserved: %#v", trigger)
+	}
+	if len(trigger.EventActions) != 0 || len(trigger.Actions) != 1 || trigger.Actions[0].Type != domain.AutomationTargetWebhook {
+		t.Fatalf("unexpected todo trigger routing: %#v", trigger)
+	}
+
+	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
+		Name: "invalid todo", Enabled: true, EventType: domain.AutomationEventTodo,
+		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetBackup, ConfigID: 1}},
+	}, 9); err == nil {
+		t.Fatal("todo trigger should reject non-notification targets")
+	}
+}
+
+func TestAutomationEventFromSyncLogNormalizesFileActions(t *testing.T) {
+	for _, test := range []struct {
+		action domain.SyncLogAction
+		want   string
+	}{
+		{domain.SyncLogActionCreate, "create"},
+		{domain.SyncLogActionModify, "modify"},
+		{domain.SyncLogActionSoftDelete, "delete"},
+		{domain.SyncLogActionDelete, "permanent_delete"},
+	} {
+		event := automationEventFromSyncLog(&domain.SyncLog{UID: 1, VaultID: 2, Action: test.action, Path: "a.bin"})
+		if event.Type != domain.AutomationEventFile || event.Action != test.want {
+			t.Fatalf("action %q mapped to %#v, want %q", test.action, event, test.want)
+		}
 	}
 }

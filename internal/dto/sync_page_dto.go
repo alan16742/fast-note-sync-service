@@ -29,7 +29,7 @@ type SyncPageMessage struct {
 // SyncPageAckRequest 客户端确认接收完当前页所有下载任务的请求
 // SyncPageAckRequest request from client to ack completion of current page
 type SyncPageAckRequest struct {
-	Context   string `json:"context" form:"context" binding:"required"`     // Sync context // 同步上下文
-	Vault     string `json:"vault" form:"vault" binding:"required"`         // Vault name // 笔记库名称
+	Context   string `json:"context" form:"context" binding:"required"`   // Sync context // 同步上下文
+	Vault     string `json:"vault" form:"vault" binding:"required"`       // Vault name // 笔记库名称
 	PageIndex int    `json:"pageIndex" form:"pageIndex" binding:"min=-1"` // Acked page index // 已确认接收完成的页码 (0-indexed)
 }

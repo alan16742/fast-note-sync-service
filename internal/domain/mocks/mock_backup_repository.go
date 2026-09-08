@@ -45,19 +45,6 @@ func (m *MockBackupRepository) SaveConfig(ctx context.Context, config *domain.Ba
 	return args.Get(0).(*domain.BackupConfig), args.Error(1)
 }
 
-func (m *MockBackupRepository) ListEnabledConfigs(ctx context.Context) ([]*domain.BackupConfig, error) {
-	args := m.Called(ctx)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]*domain.BackupConfig), args.Error(1)
-}
-
-func (m *MockBackupRepository) UpdateNextRunTime(ctx context.Context, id, uid int64, nextRun time.Time) error {
-	args := m.Called(ctx, id, uid, nextRun)
-	return args.Error(0)
-}
-
 func (m *MockBackupRepository) CreateHistory(ctx context.Context, history *domain.BackupHistory, uid int64) (*domain.BackupHistory, error) {
 	args := m.Called(ctx, history, uid)
 	if args.Get(0) == nil {

@@ -507,4 +507,3 @@ func (s *vaultService) ForceDeleteDataItem(ctx context.Context, uid int64, vault
 
 	return nil
 }
-

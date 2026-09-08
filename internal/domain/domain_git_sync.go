@@ -23,7 +23,6 @@ type GitSyncConfig struct {
 	Password        string     `json:"password"`
 	Branch          string     `json:"branch"`
 	IsEnabled       bool       `json:"isEnabled"`
-	Delay           int64      `json:"delay"` // 延迟时间（秒）
 	RetentionDays   int64      `json:"retentionDays"`
 	LastSyncTime    *time.Time `json:"lastSyncTime"`
 	LastStatus      int64      `json:"lastStatus"` // 0: 闲置, 1: 运行中, 2: 成功, 3: 失败, 4: 系统关闭
@@ -61,9 +60,6 @@ type GitSyncRepository interface {
 	List(ctx context.Context, uid int64) ([]*GitSyncConfig, error)
 	// ListByVaultID 根据笔记仓库ID获取关联的 Git 同步任务列表
 	ListByVaultID(ctx context.Context, vaultID, uid int64) ([]*GitSyncConfig, error)
-	// ListEnabled 获取所有已启用的 Git 同步任务 (跨用户)
-	ListEnabled(ctx context.Context) ([]*GitSyncConfig, error)
-
 	// CreateHistory 创建 Git 同步历史记录
 	CreateHistory(ctx context.Context, history *GitSyncHistory, uid int64) (*GitSyncHistory, error)
 	// ListHistory 分页获取 Git 同步历史记录

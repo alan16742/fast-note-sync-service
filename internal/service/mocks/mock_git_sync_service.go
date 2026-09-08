@@ -73,10 +73,6 @@ func (m *MockGitSyncService) ListHistory(ctx context.Context, uid int64, configI
 	return nil, args.Get(1).(int64), args.Error(2)
 }
 
-func (m *MockGitSyncService) NotifyUpdated(uid int64, vaultID int64) {
-	m.Called(uid, vaultID)
-}
-
 func (m *MockGitSyncService) Shutdown(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

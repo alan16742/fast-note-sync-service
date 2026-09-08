@@ -42,30 +42,30 @@ type AutomationEventPublisher interface {
 }
 
 type automationService struct {
-	repo              domain.AutomationRepository
-	backupService     BackupService
-	gitSyncService    GitSyncService
-	webhookService    WebhookService
-	webhookDispatcher *WebhookDispatcher
-	pool              *workerpool.Pool
-	logger            *zap.Logger
-	ctx               context.Context
-	cancel            context.CancelFunc
-	startOnce         sync.Once
-	shutdownOnce      sync.Once
-	eventMu           sync.Mutex
-	stopped           bool
-	eventWg           sync.WaitGroup
-	doneCh            chan struct{}
+	repo           domain.AutomationRepository
+	vaultRepo      domain.VaultRepository
+	backupService  BackupService
+	gitSyncService GitSyncService
+	webhookService WebhookService
+	pool           *workerpool.Pool
+	logger         *zap.Logger
+	ctx            context.Context
+	cancel         context.CancelFunc
+	startOnce      sync.Once
+	shutdownOnce   sync.Once
+	eventMu        sync.Mutex
+	stopped        bool
+	eventWg        sync.WaitGroup
+	doneCh         chan struct{}
 }
 
 // NewAutomationService creates the central automation coordinator.
 func NewAutomationService(
 	repo domain.AutomationRepository,
+	vaultRepo domain.VaultRepository,
 	backupService BackupService,
 	gitSyncService GitSyncService,
 	webhookService WebhookService,
-	webhookDispatcher *WebhookDispatcher,
 	pool *workerpool.Pool,
 	logger *zap.Logger,
 ) AutomationService {
@@ -74,9 +74,9 @@ func NewAutomationService(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &automationService{
-		repo: repo, backupService: backupService, gitSyncService: gitSyncService,
-		webhookService: webhookService, webhookDispatcher: webhookDispatcher,
-		pool: pool, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
+		repo: repo, vaultRepo: vaultRepo, backupService: backupService, gitSyncService: gitSyncService,
+		webhookService: webhookService,
+		pool:           pool, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
 	}
 }
 
@@ -150,6 +150,7 @@ func (s *automationService) Trigger(ctx context.Context, uid int64, request *dto
 	if event.VaultID == 0 {
 		event.VaultID = trigger.VaultID
 	}
+	s.enrichEvent(ctx, event)
 	if !automationTriggerMatches(trigger, event) {
 		return errors.New("manual event does not match automation trigger conditions")
 	}
@@ -182,6 +183,7 @@ func (s *automationService) Publish(_ context.Context, event *domain.AutomationE
 }
 
 func (s *automationService) publishNow(ctx context.Context, event *domain.AutomationEvent) {
+	s.enrichEvent(ctx, event)
 	triggers, err := s.repo.ListEnabled(ctx, event.UID, event.Type)
 	if err != nil {
 		s.logger.Warn("load automation triggers failed", zap.Int64("uid", event.UID), zap.String("eventType", string(event.Type)), zap.Error(err))
@@ -197,15 +199,22 @@ func (s *automationService) publishNow(ctx context.Context, event *domain.Automa
 	}
 }
 
-// PublishNoteChange keeps the existing notification dispatcher behind the
-// central publisher while also exposing the same note event to automation
-// triggers.
+func (s *automationService) enrichEvent(ctx context.Context, event *domain.AutomationEvent) {
+	if s == nil || s.vaultRepo == nil || event == nil || event.VaultID <= 0 || event.VaultName != "" {
+		return
+	}
+	vault, err := s.vaultRepo.GetByID(ctx, event.VaultID, event.UID)
+	if err == nil && vault != nil {
+		event.VaultName = vault.Name
+	}
+}
+
+// PublishNoteChange converts a persisted note change into the central event
+// contract. Notification delivery is performed only by matching automation
+// triggers; a channel never subscribes to events by itself.
 func (s *automationService) PublishNoteChange(ctx context.Context, event *domain.ContentChangeEvent) {
 	if s == nil || event == nil {
 		return
-	}
-	if s.webhookDispatcher != nil {
-		s.webhookDispatcher.PublishNoteChange(ctx, event)
 	}
 	s.Publish(ctx, automationEventFromNote(event))
 }
@@ -317,6 +326,7 @@ func (s *automationService) pollTimeTriggers() {
 			VaultID: trigger.VaultID, Type: domain.AutomationEventTime,
 			Action: "time", Source: "automation_clock",
 		}
+		s.enrichEvent(s.ctx, event)
 		if err := s.dispatchTrigger(context.Background(), trigger, event); err != nil {
 			s.logger.Warn("dispatch time automation trigger failed", zap.Int64("triggerID", trigger.ID), zap.Error(err))
 			continue
@@ -368,7 +378,7 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 	}
 	eventType := domain.AutomationEventType(strings.ToLower(strings.TrimSpace(string(request.EventType))))
 	switch eventType {
-	case domain.AutomationEventTime, domain.AutomationEventContent, domain.AutomationEventManual, domain.AutomationEventFile:
+	case domain.AutomationEventTime, domain.AutomationEventContent, domain.AutomationEventManual, domain.AutomationEventFile, domain.AutomationEventTodo:
 	default:
 		return nil, fmt.Errorf("unsupported automation event type: %s", request.EventType)
 	}
@@ -380,11 +390,15 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		return nil, errors.New("automation trigger name is too long")
 	}
 	timezone := strings.TrimSpace(request.Timezone)
-	if timezone == "" {
-		timezone = automationDefaultTimezone
-	}
-	if _, err := time.LoadLocation(timezone); err != nil {
-		return nil, errors.New("invalid IANA timezone")
+	if eventType == domain.AutomationEventTime || eventType == domain.AutomationEventTodo {
+		if timezone == "" {
+			timezone = automationDefaultTimezone
+		}
+		if _, err := time.LoadLocation(timezone); err != nil {
+			return nil, errors.New("invalid IANA timezone")
+		}
+	} else {
+		timezone = ""
 	}
 	schedule := strings.TrimSpace(request.Schedule)
 	if eventType == domain.AutomationEventTime {
@@ -399,7 +413,7 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		schedule = ""
 	}
 	pathGlob := strings.TrimSpace(request.PathGlob)
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile {
+	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile && eventType != domain.AutomationEventTodo {
 		pathGlob = ""
 	}
 	if pathGlob != "" {
@@ -409,10 +423,10 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 	}
 	contentContains := strings.TrimSpace(request.ContentContains)
 	pathPrefix := strings.TrimSpace(request.PathPrefix)
-	if eventType != domain.AutomationEventContent {
+	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventTodo {
 		contentContains = ""
 	}
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile {
+	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile && eventType != domain.AutomationEventTodo {
 		pathPrefix = ""
 	}
 	eventActions, err := normalizeEventActions(request.EventActions)
@@ -436,6 +450,9 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		}
 		if item.ConfigID <= 0 {
 			return nil, errors.New("automation target config id is required")
+		}
+		if eventType == domain.AutomationEventTodo && targetType != domain.AutomationTargetWebhook {
+			return nil, errors.New("todo triggers can only target notification channels")
 		}
 		targetKey := fmt.Sprintf("%s:%d", targetType, item.ConfigID)
 		if _, exists := seenTargets[targetKey]; exists {
@@ -490,16 +507,26 @@ func automationTriggerMatches(trigger *domain.AutomationTrigger, event *domain.A
 	if trigger.ContentContains != "" && !strings.Contains(event.Content, trigger.ContentContains) {
 		return false
 	}
-	pathValue := event.Path
-	if pathValue == "" {
-		pathValue = event.OldPath
-	}
-	if trigger.PathPrefix != "" && !strings.HasPrefix(pathValue, trigger.PathPrefix) {
-		return false
-	}
-	if trigger.PathGlob != "" {
-		matched, err := path.Match(trigger.PathGlob, pathValue)
-		if err != nil || !matched {
+	if trigger.PathPrefix != "" || trigger.PathGlob != "" {
+		paths := []string{event.Path}
+		if event.OldPath != "" && event.OldPath != event.Path {
+			paths = append(paths, event.OldPath)
+		}
+		matchedPath := false
+		for _, pathValue := range paths {
+			if trigger.PathPrefix != "" && !strings.HasPrefix(pathValue, trigger.PathPrefix) {
+				continue
+			}
+			if trigger.PathGlob != "" {
+				matched, err := path.Match(trigger.PathGlob, pathValue)
+				if err != nil || !matched {
+					continue
+				}
+			}
+			matchedPath = true
+			break
+		}
+		if !matchedPath {
 			return false
 		}
 	}

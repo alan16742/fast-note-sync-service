@@ -41,7 +41,7 @@ func (r *reminderRepository) db(ctx context.Context, uid int64) (*gorm.DB, error
 	return r.dao.ResolveDB(r.GetKey(uid)).WithContext(ctx), nil
 }
 
-func (r *reminderRepository) SyncNote(ctx context.Context, uid, subscriptionID, noteID int64, jobs []domain.ReminderJob) error {
+func (r *reminderRepository) SyncNote(ctx context.Context, uid, triggerID, noteID int64, jobs []domain.ReminderJob) error {
 	if _, err := r.db(ctx, uid); err != nil {
 		return err
 	}
@@ -53,18 +53,18 @@ func (r *reminderRepository) SyncNote(ctx context.Context, uid, subscriptionID, 
 				if err != nil {
 					return err
 				}
-				item := model.ReminderJob{UID: uid, SubscriptionID: subscriptionID, NoteID: noteID, TaskKey: job.Task.Key, Schedule: string(schedule), Active: true, NextAt: job.NextAt, OccurrenceAt: job.OccurrenceAt}
+				item := model.ReminderJob{UID: uid, TriggerID: triggerID, NoteID: noteID, TaskKey: job.Task.Key, Schedule: string(schedule), Active: true, NextAt: job.NextAt, OccurrenceAt: job.OccurrenceAt}
 				keys = append(keys, item.TaskKey)
-				if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "uid"}, {Name: "subscription_id"}, {Name: "note_id"}, {Name: "task_key"}}, DoNothing: true}).Create(&item).Error; err != nil {
+				if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "uid"}, {Name: "trigger_id"}, {Name: "note_id"}, {Name: "task_key"}}, DoNothing: true}).Create(&item).Error; err != nil {
 					return err
 				}
 				// Reopened tasks start from their new effective time. Live tasks
 				// retain delivery progress across repeated scans and restarts.
-				if err := tx.Model(&model.ReminderJob{}).Where("uid = ? AND subscription_id = ? AND note_id = ? AND task_key = ? AND active = ?", uid, subscriptionID, noteID, item.TaskKey, false).Updates(map[string]any{"active": true, "schedule": item.Schedule, "next_at": item.NextAt, "occurrence_at": item.OccurrenceAt, "retry_at": 0, "attempts": 0, "lease_until": 0, "claim_token": ""}).Error; err != nil {
+				if err := tx.Model(&model.ReminderJob{}).Where("uid = ? AND trigger_id = ? AND note_id = ? AND task_key = ? AND active = ?", uid, triggerID, noteID, item.TaskKey, false).Updates(map[string]any{"active": true, "schedule": item.Schedule, "next_at": item.NextAt, "occurrence_at": item.OccurrenceAt, "retry_at": 0, "attempts": 0, "lease_until": 0, "claim_token": ""}).Error; err != nil {
 					return err
 				}
 			}
-			query := tx.Model(&model.ReminderJob{}).Where("uid = ? AND subscription_id = ? AND note_id = ?", uid, subscriptionID, noteID)
+			query := tx.Model(&model.ReminderJob{}).Where("uid = ? AND trigger_id = ? AND note_id = ?", uid, triggerID, noteID)
 			if len(keys) > 0 {
 				query = query.Where("task_key NOT IN ?", keys)
 			}
@@ -73,18 +73,18 @@ func (r *reminderRepository) SyncNote(ctx context.Context, uid, subscriptionID, 
 	})
 }
 
-func (r *reminderRepository) ListDue(ctx context.Context, uid, subscriptionID, now int64, limit int) ([]domain.ReminderJob, error) {
+func (r *reminderRepository) ListDue(ctx context.Context, uid, triggerID, now int64, limit int) ([]domain.ReminderJob, error) {
 	db, err := r.db(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
 	var rows []model.ReminderJob
-	if err := db.Where("uid = ? AND subscription_id = ? AND active = ? AND next_at > 0 AND next_at <= ? AND retry_at <= ? AND lease_until <= ?", uid, subscriptionID, true, now, now, now).Order("next_at, id").Limit(limit).Find(&rows).Error; err != nil {
+	if err := db.Where("uid = ? AND trigger_id = ? AND active = ? AND next_at > 0 AND next_at <= ? AND retry_at <= ? AND lease_until <= ?", uid, triggerID, true, now, now, now).Order("next_at, id").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]domain.ReminderJob, 0, len(rows))
 	for _, row := range rows {
-		job := domain.ReminderJob{ID: row.ID, UID: uid, SubscriptionID: subscriptionID, NoteID: row.NoteID, NextAt: row.NextAt, OccurrenceAt: row.OccurrenceAt, Attempts: row.Attempts}
+		job := domain.ReminderJob{ID: row.ID, UID: uid, TriggerID: triggerID, NoteID: row.NoteID, NextAt: row.NextAt, OccurrenceAt: row.OccurrenceAt, Attempts: row.Attempts}
 		if err := json.Unmarshal([]byte(row.Schedule), &job.Task); err != nil {
 			return nil, err
 		}

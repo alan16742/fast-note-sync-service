@@ -17,12 +17,10 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
-	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/storage"
 	pkgstorage "github.com/haierkeys/fast-note-sync-service/pkg/storage"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
-	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
 
@@ -43,8 +41,6 @@ type BackupService interface {
 	UpdateConfig(ctx context.Context, uid int64, req *dto.BackupConfigRequest) (*dto.BackupConfigDTO, error)
 	ListHistory(ctx context.Context, uid int64, configID int64, pager *app.Pager) ([]*dto.BackupHistoryDTO, int64, error)
 	ExecuteUserBackup(ctx context.Context, uid int64, configID int64) error
-	ExecuteTaskBackups(ctx context.Context) error
-	NotifyUpdated(uid int64)
 	Shutdown(ctx context.Context) error
 }
 
@@ -58,12 +54,9 @@ type backupService struct {
 	storageConfig  *config.StorageConfig
 	tempPath       string
 	logger         *zap.Logger
-	syncTimers     map[int64]*time.Timer
-	timerMu        sync.Mutex
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	pendingSyncs   sync.Map                     // key: uid (int64), value: bool
 	runningTasks   map[int64]context.CancelFunc // key: configID
 	runningMu      sync.Mutex
 }
@@ -95,7 +88,6 @@ func NewBackupService(
 		storageConfig:  storageConfig,
 		tempPath:       tempPath,
 		logger:         logger,
-		syncTimers:     make(map[int64]*time.Timer),
 		runningTasks:   make(map[int64]context.CancelFunc),
 		ctx:            ctx,
 		cancel:         cancel,
@@ -287,8 +279,6 @@ func (s *backupService) UpdateConfig(ctx context.Context, uid int64, req *dto.Ba
 		Type:             req.Type,
 		StorageIds:       req.StorageIds,
 		IsEnabled:        req.IsEnabled,
-		CronStrategy:     req.CronStrategy,
-		CronExpression:   req.CronExpression,
 		IncludeVaultName: req.IncludeVaultName,
 		RetentionDays:    retentionDays,
 		PasswordMode:     req.PasswordMode,
@@ -304,19 +294,9 @@ func (s *backupService) UpdateConfig(ctx context.Context, uid int64, req *dto.Ba
 		}
 	}
 
-	// Calculate NextRunTime based on Cron Strategy
-	s.calculateNextRunTime(config)
-
 	updated, err := s.backupRepo.SaveConfig(ctx, config, uid)
 	if err != nil {
 		return nil, err
-	}
-
-	// Trigger sync check immediately if enabled and type is sync
-	if updated.IsEnabled && (updated.Type == "sync") {
-
-		fmt.Println("Trigger sync check immediately if enabled and type is sync")
-		s.pendingSyncs.Store(uid, true)
 	}
 
 	return s.configToDTO(ctx, updated), nil
@@ -369,14 +349,11 @@ func (s *backupService) configToDTO(ctx context.Context, d *domain.BackupConfig)
 		Type:             d.Type,
 		StorageIds:       d.StorageIds,
 		IsEnabled:        d.IsEnabled,
-		CronStrategy:     d.CronStrategy,
-		CronExpression:   d.CronExpression,
 		IncludeVaultName: d.IncludeVaultName,
 		RetentionDays:    d.RetentionDays,
 		PasswordMode:     d.PasswordMode,
 		PasswordValue:    d.PasswordValue,
 		LastRunTime:      timex.Time(d.LastRunTime),
-		NextRunTime:      timex.Time(d.NextRunTime),
 		LastStatus:       d.LastStatus,
 		LastMessage:      d.LastMessage,
 		CreatedAt:        timex.Time(d.CreatedAt),
@@ -440,89 +417,6 @@ func (s *backupService) ExecuteUserBackup(ctx context.Context, uid int64, config
 		return err
 	}
 	return nil
-}
-
-// ExecuteTaskBackups Poll and process all scheduled backup tasks
-// 轮询处理所有待执行的定时备份任务
-func (s *backupService) ExecuteTaskBackups(ctx context.Context) error {
-	configs, err := s.backupRepo.ListEnabledConfigs(ctx)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now()
-	for _, config := range configs {
-		if !config.IsEnabled {
-			continue
-		}
-
-		// Check if user has pending changes
-		_, pending := s.pendingSyncs.LoadAndDelete(config.UID)
-
-		isScheduled := config.NextRunTime.Before(now)
-		shouldTrigger := false
-
-		if isScheduled {
-			shouldTrigger = true
-		} else if pending && config.Type == "sync" {
-			// Only "sync" type tasks are allowed to be triggered directly by changes (debounced)
-			shouldTrigger = true
-		}
-
-		if shouldTrigger {
-			s.logger.Info("Triggering backup task",
-				zap.Int64("uid", config.UID),
-				zap.String("type", config.Type),
-				zap.Bool("isScheduled", isScheduled),
-				zap.Bool("isPending", pending),
-			)
-			safego.Go(s.logger, func() {
-				// Use service context to support graceful shutdown
-				if err := s.handleBackupSync(s.ctx, config, pending); err != nil {
-					s.logger.Error("Backup execution failed", zap.Int64("uid", config.UID), zap.Error(err))
-				}
-			})
-		}
-	}
-
-	return nil
-}
-
-// calculateNextRunTime Calculate next run time based on Cron strategy
-// 根据 Cron 策略计算下次运行时间
-func (s *backupService) calculateNextRunTime(config *domain.BackupConfig) {
-	if !config.IsEnabled {
-		return
-	}
-
-	if config.Type == "sync" {
-		config.NextRunTime = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
-		return
-	}
-
-	expr := ""
-	switch config.CronStrategy {
-	case "daily":
-		expr = "0 0 * * *" // Midnight daily
-	case "weekly":
-		expr = "0 0 * * 0" // Midnight Sunday
-	case "monthly":
-		expr = "0 0 1 * *" // Midnight 1st of month
-	case "custom":
-		expr = config.CronExpression
-	case "cron":
-		// 前端保存自定义 cron 表达式时写入该策略值，与 custom 行为一致
-		expr = config.CronExpression
-	}
-
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	schedule, err := parser.Parse(expr)
-	if err != nil {
-		s.logger.Error("Failed to parse cron expression", zap.String("expr", expr), zap.Error(err))
-		return
-	}
-
-	config.NextRunTime = schedule.Next(time.Now())
 }
 
 // handleBackupSync Core entry point for performing backup/sync
@@ -800,7 +694,6 @@ func (s *backupService) finishTask(ctx context.Context, config *domain.BackupCon
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // Increased timeout for file deletion
 	defer cancel()
 
-	s.calculateNextRunTime(config)
 	s.backupRepo.SaveConfig(saveCtx, config, config.UID)
 
 	if config.RetentionDays != 0 {
@@ -1208,32 +1101,6 @@ func (s *backupService) recordNoUpdateHistory(ctx context.Context, config *domai
 	}
 }
 
-const syncDebounceDelay = 30 * time.Second
-
-// NotifyUpdated Trigger debounced incremental sync task
-// Called when note/file/folder changes, executes ExecuteUserBackup after syncDebounceDelay
-// 触发防抖的增量同步任务
-// 当笔记/文件/目录发生变更时调用，会在延迟 syncDebounceDelay 后执行 ExecuteUserBackup
-func (s *backupService) NotifyUpdated(uid int64) {
-	s.timerMu.Lock()
-	defer s.timerMu.Unlock()
-
-	if timer, ok := s.syncTimers[uid]; ok {
-		timer.Stop()
-	}
-
-	s.syncTimers[uid] = time.AfterFunc(syncDebounceDelay, func() {
-		s.logger.Info("Triggering debounced sync (memory flag)", zap.Int64("uid", uid))
-
-		// Set in-memory flag instead of DB write // 设置内存标志而非 DB 写入
-		s.pendingSyncs.Store(uid, true)
-
-		s.timerMu.Lock()
-		delete(s.syncTimers, uid)
-		s.timerMu.Unlock()
-	})
-}
-
 // Shutdown Clean up resources and handle state changes during shutdown
 // 停止服务，清理资源并处理关闭时的状态变更
 func (s *backupService) Shutdown(ctx context.Context) error {
@@ -1241,20 +1108,7 @@ func (s *backupService) Shutdown(ctx context.Context) error {
 	// 1. 通知所有后台任务停止
 	s.cancel()
 
-	s.timerMu.Lock()
-	// Stop all pending sync timers
-	// 停止所有待执行的同步定时器
-	for uid, timer := range s.syncTimers {
-		if timer.Stop() {
-			s.logger.Info("Stopped pending sync timer during shutdown", zap.Int64("uid", uid))
-		}
-	}
-	// Clear the map
-	// 清空 map
-	s.syncTimers = make(map[int64]*time.Timer)
-	s.timerMu.Unlock()
-
-	// 2. Wait for active backup/sync tasks to finish or abort
+	// Wait for active backup/sync tasks to finish or abort
 	// 2. 等待活跃的备份/同步任务完成或中止
 	// We use a channel to support timeout if needed, though ctx passed to Shutdown usually handles timeout
 	// 我们使用 channel 来支持必要的超时，尽管传给 Shutdown 的 ctx 通常会处理超时

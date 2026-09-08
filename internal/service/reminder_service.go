@@ -5,18 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
-	"github.com/haierkeys/fast-note-sync-service/pkg/notification"
-	"github.com/haierkeys/fast-note-sync-service/pkg/notification/bark"
-	"github.com/haierkeys/fast-note-sync-service/pkg/notification/serverchan"
-	"github.com/haierkeys/fast-note-sync-service/pkg/notification/webhook"
 	"github.com/haierkeys/fast-note-sync-service/pkg/reminder"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -27,33 +23,29 @@ type reminderScan struct {
 	timestamp   int64
 }
 
-// ReminderService indexes changed notes, stores one next delivery per task, and
-// rechecks the source immediately before sending. Provider calls stay outside DB
-// transactions and the note synchronization path.
+// ReminderService implements the specialized todo-content trigger. The
+// automation trigger owns the vault/path/timezone conditions and references
+// notification channels as execution targets.
 type ReminderService struct {
-	users         domain.UserRepository
-	vaults        domain.VaultRepository
-	notes         domain.NoteRepository
-	subscriptions domain.WebhookRepository
-	jobs          domain.ReminderRepository
-	senders       map[string]notification.Sender
-	logger        *zap.Logger
-	scans         map[string]reminderScan
-	tickMu        sync.Mutex
-	lifeMu        sync.Mutex
-	cancel        context.CancelFunc
-	done          chan struct{}
+	users    domain.UserRepository
+	vaults   domain.VaultRepository
+	notes    domain.NoteRepository
+	triggers domain.AutomationRepository
+	webhooks WebhookService
+	jobs     domain.ReminderRepository
+	logger   *zap.Logger
+	scans    map[string]reminderScan
+	tickMu   sync.Mutex
+	lifeMu   sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
-func NewReminderService(users domain.UserRepository, vaults domain.VaultRepository, notes domain.NoteRepository, subscriptions domain.WebhookRepository, jobs domain.ReminderRepository, logger *zap.Logger) *ReminderService {
+func NewReminderService(users domain.UserRepository, vaults domain.VaultRepository, notes domain.NoteRepository, triggers domain.AutomationRepository, webhooks WebhookService, jobs domain.ReminderRepository, logger *zap.Logger) *ReminderService {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &ReminderService{users: users, vaults: vaults, notes: notes, subscriptions: subscriptions, jobs: jobs, logger: logger, scans: map[string]reminderScan{}, senders: map[string]notification.Sender{
-		domain.WebhookProviderServerChan: serverchan.NewClient(nil),
-		domain.WebhookProviderBark:       bark.NewClient(nil),
-		domain.WebhookProviderCustom:     webhook.NewClient(nil),
-	}}
+	return &ReminderService{users: users, vaults: vaults, notes: notes, triggers: triggers, webhooks: webhooks, jobs: jobs, logger: logger, scans: map[string]reminderScan{}}
 }
 
 func (s *ReminderService) Start() {
@@ -70,7 +62,7 @@ func (s *ReminderService) Start() {
 		defer ticker.Stop()
 		for {
 			if err := s.Tick(ctx, time.Now()); err != nil && ctx.Err() == nil {
-				s.logger.Warn("process task reminders failed", zap.Error(err))
+				s.logger.Warn("process todo triggers failed", zap.Error(err))
 			}
 			select {
 			case <-ctx.Done():
@@ -109,36 +101,30 @@ func (s *ReminderService) Tick(ctx context.Context, now time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		subscriptions, err := s.subscriptions.ListEnabled(ctx, uid)
+		triggers, err := s.triggers.ListEnabled(ctx, uid, domain.AutomationEventTodo)
 		if err != nil {
-			s.logger.Warn("load reminder channels failed", zap.Int64("uid", uid), zap.Error(err))
+			s.logger.Warn("load todo triggers failed", zap.Int64("uid", uid), zap.Error(err))
 			continue
 		}
-		var vaults []*domain.Vault
-		for _, subscription := range subscriptions {
-			if subscription.Mode != domain.NotificationModeReminder {
-				continue
-			}
-			if vaults == nil {
-				vaults, err = s.vaults.List(ctx, uid)
-				if err != nil {
-					s.logger.Warn("load reminder vaults failed", zap.Int64("uid", uid), zap.Error(err))
-					break
-				}
-			}
+		vaults, err := s.vaults.List(ctx, uid)
+		if err != nil {
+			s.logger.Warn("load todo vaults failed", zap.Int64("uid", uid), zap.Error(err))
+			continue
+		}
+		for _, trigger := range triggers {
 			for _, vault := range vaults {
-				if vault.IsDeleted || (subscription.VaultID != 0 && subscription.VaultID != vault.ID) {
+				if vault.IsDeleted || (trigger.VaultID != 0 && trigger.VaultID != vault.ID) {
 					continue
 				}
-				scanKey := fmt.Sprintf("%d/%d/%d", uid, subscription.ID, vault.ID)
+				scanKey := formatReminderScanKey(uid, trigger.ID, vault.ID)
 				activeScans[scanKey] = true
-				if err := s.indexVault(ctx, uid, subscription, vault, scanKey, now); err != nil {
-					s.logger.Warn("index reminders failed", zap.Int64("uid", uid), zap.Int64("subscription", subscription.ID), zap.Error(err))
+				if err := s.indexVault(ctx, uid, trigger, vault, scanKey, now); err != nil {
+					s.logger.Warn("index todo trigger failed", zap.Int64("uid", uid), zap.Int64("triggerID", trigger.ID), zap.Error(err))
 				}
 			}
-			jobs, err := s.jobs.ListDue(ctx, uid, subscription.ID, now.Unix(), 100)
+			jobs, err := s.jobs.ListDue(ctx, uid, trigger.ID, now.Unix(), 100)
 			if err != nil {
-				s.logger.Warn("load due reminders failed", zap.Int64("uid", uid), zap.Error(err))
+				s.logger.Warn("load due todo reminders failed", zap.Int64("uid", uid), zap.Int64("triggerID", trigger.ID), zap.Error(err))
 				continue
 			}
 			for _, job := range jobs {
@@ -146,7 +132,7 @@ func (s *ReminderService) Tick(ctx context.Context, now time.Time) error {
 					return err
 				}
 				if err := s.deliver(ctx, job, now); err != nil {
-					s.logger.Warn("deliver reminder failed", zap.Int64("uid", uid), zap.Int64("job", job.ID), zap.Error(err))
+					s.logger.Warn("deliver todo reminder failed", zap.Int64("uid", uid), zap.Int64("job", job.ID), zap.Error(err))
 				}
 			}
 		}
@@ -159,8 +145,17 @@ func (s *ReminderService) Tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (s *ReminderService) indexVault(ctx context.Context, uid int64, subscription *domain.WebhookSubscription, vault *domain.Vault, key string, now time.Time) error {
-	encoded, _ := json.Marshal(subscription)
+func formatReminderScanKey(uid, triggerID, vaultID int64) string {
+	return fmtInt(uid) + "/" + fmtInt(triggerID) + "/" + fmtInt(vaultID)
+}
+
+func fmtInt(value int64) string {
+	// Avoid pulling formatting into the hot scan loop through fmt.Sprintf.
+	return strconv.FormatInt(value, 10)
+}
+
+func (s *ReminderService) indexVault(ctx context.Context, uid int64, trigger *domain.AutomationTrigger, vault *domain.Vault, key string, now time.Time) error {
+	encoded, _ := json.Marshal(trigger)
 	fingerprint := sha256.Sum256(encoded)
 	state := s.scans[key]
 	if state.fingerprint != fingerprint {
@@ -175,7 +170,7 @@ func (s *ReminderService) indexVault(ctx context.Context, uid int64, subscriptio
 			return err
 		}
 		var jobs []domain.ReminderJob
-		if !meta.IsDeleted() && strings.HasSuffix(strings.ToLower(meta.Path), ".md") && matchesPath(&domain.ContentChangeEvent{Path: meta.Path}, subscription) {
+		if !meta.IsDeleted() && strings.HasSuffix(strings.ToLower(meta.Path), ".md") {
 			note, err := s.notes.GetByID(ctx, meta.ID, uid)
 			if err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -183,36 +178,34 @@ func (s *ReminderService) indexVault(ctx context.Context, uid int64, subscriptio
 				}
 				return err
 			}
-			if note == nil || note.IsDeleted() {
-				continue
-			}
-			tasks, issues := reminder.Parse(note.Content, subscription.Timezone)
-			for _, issue := range issues {
-				s.logger.Warn("invalid task reminder", zap.Int64("uid", uid), zap.Int64("note", note.ID), zap.Error(issue))
-			}
-			effective := subscription.CreatedAt
-			if updated := time.UnixMilli(note.UpdatedTimestamp); updated.After(effective) {
-				effective = updated
-			}
-			if effective.IsZero() {
-				effective = now
-			}
-			for _, task := range tasks {
-				if task.Completed {
-					continue
+			if note != nil && !note.IsDeleted() && automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodo, UID: uid, VaultID: vault.ID, Path: note.Path, Content: note.Content}) {
+				tasks, issues := reminder.Parse(note.Content, trigger.Timezone)
+				for _, issue := range issues {
+					s.logger.Warn("invalid todo annotation", zap.Int64("uid", uid), zap.Int64("note", note.ID), zap.Error(issue))
 				}
-				job := domain.ReminderJob{Task: task}
-				if next, ok := task.Next(effective.Truncate(time.Second).Add(-time.Second)); ok {
-					job.NextAt, job.OccurrenceAt = next.At.Unix(), next.Occurrence.Unix()
+				effective := trigger.CreatedAt
+				if updated := time.UnixMilli(note.UpdatedTimestamp); updated.After(effective) {
+					effective = updated
 				}
-				jobs = append(jobs, job)
+				if effective.IsZero() {
+					effective = now
+				}
+				for _, task := range tasks {
+					if task.Completed {
+						continue
+					}
+					job := domain.ReminderJob{Task: task}
+					if next, ok := task.Next(effective.Truncate(time.Second).Add(-time.Second)); ok {
+						job.NextAt, job.OccurrenceAt = next.At.Unix(), next.Occurrence.Unix()
+					}
+					jobs = append(jobs, job)
+				}
 			}
 		}
-		if err := s.jobs.SyncNote(ctx, uid, subscription.ID, meta.ID, jobs); err != nil {
+		if err := s.jobs.SyncNote(ctx, uid, trigger.ID, meta.ID, jobs); err != nil {
 			return err
 		}
 	}
-	// Revisit the boundary to cover writes sharing a timestamp with this scan.
 	s.scans[key] = reminderScan{fingerprint: fingerprint, timestamp: now.Add(-2 * time.Second).UnixMilli()}
 	return nil
 }
@@ -224,11 +217,11 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 		return err
 	}
 	cancel := func() error { return s.jobs.Cancel(ctx, job.UID, job.ID, token) }
-	subscription, err := s.subscriptions.GetByID(ctx, job.SubscriptionID, job.UID)
+	trigger, err := s.triggers.GetByID(ctx, job.TriggerID, job.UID)
 	if err != nil {
 		return s.retry(ctx, job, token, now, err)
 	}
-	if subscription == nil || !subscription.Enabled || subscription.Mode != domain.NotificationModeReminder {
+	if trigger == nil || !trigger.Enabled || trigger.EventType != domain.AutomationEventTodo {
 		return cancel()
 	}
 	note, err := s.notes.GetByID(ctx, job.NoteID, job.UID)
@@ -238,7 +231,7 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	if err != nil {
 		return s.retry(ctx, job, token, now, err)
 	}
-	if note == nil || note.IsDeleted() || !strings.HasSuffix(strings.ToLower(note.Path), ".md") || (subscription.VaultID != 0 && subscription.VaultID != note.VaultID) || !matchesPath(&domain.ContentChangeEvent{Path: note.Path}, subscription) {
+	if note == nil || note.IsDeleted() || !strings.HasSuffix(strings.ToLower(note.Path), ".md") || (trigger.VaultID != 0 && trigger.VaultID != note.VaultID) || !automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodo, UID: job.UID, VaultID: note.VaultID, Path: note.Path, Content: note.Content}) {
 		return cancel()
 	}
 	vault, err := s.vaults.GetByID(ctx, note.VaultID, job.UID)
@@ -251,7 +244,7 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	if vault == nil || vault.IsDeleted {
 		return cancel()
 	}
-	tasks, _ := reminder.Parse(note.Content, subscription.Timezone)
+	tasks, _ := reminder.Parse(note.Content, trigger.Timezone)
 	var current *reminder.Task
 	for i := range tasks {
 		if tasks[i].Key == job.Task.Key && !tasks[i].Completed {
@@ -262,23 +255,22 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	if current == nil || (current.Until != nil && now.After(*current.Until)) {
 		return cancel()
 	}
-	sender := s.senders[subscription.Provider]
-	if sender == nil {
-		return cancel()
-	}
 	location, _ := time.LoadLocation(current.Timezone)
 	due := time.Unix(job.OccurrenceAt, 0).In(location).Format(reminder.DateLayout)
 	link := "obsidian://open?" + url.Values{"vault": {vault.Name}, "file": {note.Path}}.Encode()
-	message := messageForReminder(subscription, current.Title, due, current.Timezone, vault.Name, note.Path, note.Content, link)
-	sendCtx, stop := context.WithTimeout(ctx, notification.Timeout)
-	err = sendNotification(sendCtx, sender, subscription, message)
-	stop()
-	if err != nil {
-		return s.retry(ctx, job, token, now, err)
+	var firstErr error
+	for _, action := range trigger.Actions {
+		if action.Type != domain.AutomationTargetWebhook {
+			continue
+		}
+		if err := s.webhooks.DeliverReminder(ctx, job.UID, action.ConfigID, current.Title, due, current.Timezone, vault.Name, note.Path, note.Content, link); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return s.retry(ctx, job, token, now, firstErr)
 	}
 	var nextAt, occurrenceAt int64
-	// A restart catches up at most one pending reminder per task, then resumes
-	// from now; this avoids replaying hours of overdue notifications in a burst.
 	if next, ok := current.Next(now); ok {
 		nextAt, occurrenceAt = next.At.Unix(), next.Occurrence.Unix()
 	}

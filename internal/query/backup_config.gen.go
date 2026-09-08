@@ -34,12 +34,9 @@ func newBackupConfig(db *gorm.DB, opts ...gen.DOOption) backupConfig {
 	_backupConfig.Type = field.NewString(tableName, "type")
 	_backupConfig.StorageIds = field.NewString(tableName, "storage_ids")
 	_backupConfig.IsEnabled = field.NewInt64(tableName, "is_enabled")
-	_backupConfig.CronStrategy = field.NewString(tableName, "cron_strategy")
-	_backupConfig.CronExpression = field.NewString(tableName, "cron_expression")
 	_backupConfig.IncludeVaultName = field.NewInt64(tableName, "include_vault_name")
 	_backupConfig.RetentionDays = field.NewInt64(tableName, "retention_days")
 	_backupConfig.LastRunTime = field.NewTime(tableName, "last_run_time")
-	_backupConfig.NextRunTime = field.NewTime(tableName, "next_run_time")
 	_backupConfig.LastStatus = field.NewInt64(tableName, "last_status")
 	_backupConfig.LastMessage = field.NewString(tableName, "last_message")
 	_backupConfig.PasswordMode = field.NewInt64(tableName, "password_mode")
@@ -62,12 +59,9 @@ type backupConfig struct {
 	Type             field.String
 	StorageIds       field.String
 	IsEnabled        field.Int64
-	CronStrategy     field.String
-	CronExpression   field.String
 	IncludeVaultName field.Int64
 	RetentionDays    field.Int64
 	LastRunTime      field.Time
-	NextRunTime      field.Time
 	LastStatus       field.Int64
 	LastMessage      field.String
 	PasswordMode     field.Int64
@@ -96,12 +90,9 @@ func (b *backupConfig) updateTableName(table string) *backupConfig {
 	b.Type = field.NewString(table, "type")
 	b.StorageIds = field.NewString(table, "storage_ids")
 	b.IsEnabled = field.NewInt64(table, "is_enabled")
-	b.CronStrategy = field.NewString(table, "cron_strategy")
-	b.CronExpression = field.NewString(table, "cron_expression")
 	b.IncludeVaultName = field.NewInt64(table, "include_vault_name")
 	b.RetentionDays = field.NewInt64(table, "retention_days")
 	b.LastRunTime = field.NewTime(table, "last_run_time")
-	b.NextRunTime = field.NewTime(table, "next_run_time")
 	b.LastStatus = field.NewInt64(table, "last_status")
 	b.LastMessage = field.NewString(table, "last_message")
 	b.PasswordMode = field.NewInt64(table, "password_mode")
@@ -136,19 +127,16 @@ func (b *backupConfig) GetFieldByName(fieldName string) (field.OrderExpr, bool) 
 }
 
 func (b *backupConfig) fillFieldMap() {
-	b.fieldMap = make(map[string]field.Expr, 18)
+	b.fieldMap = make(map[string]field.Expr, 15)
 	b.fieldMap["id"] = b.ID
 	b.fieldMap["uid"] = b.UID
 	b.fieldMap["vault_id"] = b.VaultID
 	b.fieldMap["type"] = b.Type
 	b.fieldMap["storage_ids"] = b.StorageIds
 	b.fieldMap["is_enabled"] = b.IsEnabled
-	b.fieldMap["cron_strategy"] = b.CronStrategy
-	b.fieldMap["cron_expression"] = b.CronExpression
 	b.fieldMap["include_vault_name"] = b.IncludeVaultName
 	b.fieldMap["retention_days"] = b.RetentionDays
 	b.fieldMap["last_run_time"] = b.LastRunTime
-	b.fieldMap["next_run_time"] = b.NextRunTime
 	b.fieldMap["last_status"] = b.LastStatus
 	b.fieldMap["last_message"] = b.LastMessage
 	b.fieldMap["password_mode"] = b.PasswordMode

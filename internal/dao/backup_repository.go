@@ -58,12 +58,9 @@ func (r *backupRepository) configToDomain(m *model.BackupConfig) *domain.BackupC
 		Type:             m.Type,
 		StorageIds:       m.StorageIds,
 		IsEnabled:        m.IsEnabled == 1,
-		CronStrategy:     m.CronStrategy,
-		CronExpression:   m.CronExpression,
 		IncludeVaultName: m.IncludeVaultName == 1,
 		RetentionDays:    int(m.RetentionDays),
 		LastRunTime:      m.LastRunTime,
-		NextRunTime:      m.NextRunTime,
 		LastStatus:       int(m.LastStatus),
 		LastMessage:      m.LastMessage,
 		PasswordMode:     int(m.PasswordMode),
@@ -92,12 +89,9 @@ func (r *backupRepository) configToModel(d *domain.BackupConfig) *model.BackupCo
 		Type:             d.Type,
 		StorageIds:       d.StorageIds,
 		IsEnabled:        isEnabled,
-		CronStrategy:     d.CronStrategy,
-		CronExpression:   d.CronExpression,
 		IncludeVaultName: includeVaultName,
 		RetentionDays:    int64(d.RetentionDays),
 		LastRunTime:      d.LastRunTime,
-		NextRunTime:      d.NextRunTime,
 		LastStatus:       int64(d.LastStatus),
 		LastMessage:      d.LastMessage,
 		PasswordMode:     int64(d.PasswordMode),
@@ -222,42 +216,6 @@ func (r *backupRepository) SaveConfig(ctx context.Context, config *domain.Backup
 		return nil
 	})
 	return result, err
-}
-
-func (r *backupRepository) ListEnabledConfigs(ctx context.Context) ([]*domain.BackupConfig, error) {
-	// This is a cross-database operation, requiring external iteration over all users
-	// 这是一个跨库操作，需要在外部循环所有用户。
-	// But in the Repository layer, we only implement operations for specific databases
-	// 但在 Repository 层，我们只实现针对特定库的操作。
-	// There is a bit of a contradiction here because the semantics of ListEnabledConfigs is usually "global"
-	// 这里其实有点矛盾，因为 ListEnabledConfigs 的语义通常是“全局”。
-	// According to the logic of dao.go, we can first get all UIDs and then check them one by one
-	// 按照 dao.go 的逻辑，我们可以先获取所有 UID，然后逐个查。
-	uids, err := r.dao.GetAllUserUIDs()
-	if err != nil {
-		return nil, err
-	}
-
-	var allConfigs []*domain.BackupConfig
-	for _, uid := range uids {
-		q := r.backup(uid).BackupConfig
-		configs, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.IsEnabled.Eq(1)).Find()
-		if err != nil {
-			continue
-		}
-		for _, m := range configs {
-			allConfigs = append(allConfigs, r.configToDomain(m))
-		}
-	}
-	return allConfigs, nil
-}
-
-func (r *backupRepository) UpdateNextRunTime(ctx context.Context, id, uid int64, nextRun time.Time) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		q := r.backup(uid).BackupConfig
-		_, err := q.WithContext(ctx).Where(q.ID.Eq(id)).Update(q.NextRunTime, nextRun)
-		return err
-	})
 }
 
 // Modify interface definition to support calls without UID (if ID is included in Config)

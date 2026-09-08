@@ -163,15 +163,13 @@ type noteService struct {
 	clientName     string                       // Client name // 客户端名称
 	clientVer      string                       // Client version // 客户端版本
 	config         *ServiceConfig               // Service configuration // 服务配置
-	backupService  BackupService                // Backup service // 备份服务
-	gitSyncService GitSyncService               // Git sync service // Git 同步服务
 	eventPublisher NoteEventPublisher           // Note event publisher (notifications + automation) // 笔记事件发布器（通知与自动化）
 	countTimers    *sync.Map                    // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
 // NewNoteService creates NoteService instance
 // NewNoteService 创建 NoteService 实例
-func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig, publishers ...NoteEventPublisher) NoteService {
+func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, syncLogSvc SyncLogService, config *ServiceConfig, publishers ...NoteEventPublisher) NoteService {
 	var eventPublisher NoteEventPublisher
 	if len(publishers) > 0 {
 		eventPublisher = publishers[0]
@@ -185,8 +183,6 @@ func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteReposito
 		historyRepo:    historyRepo,
 		vaultService:   vaultSvc,
 		folderService:  folderSvc,
-		backupService:  backupSvc,
-		gitSyncService: gitSyncSvc,
 		eventPublisher: eventPublisher,
 		syncLogService: syncLogSvc,
 		sf:             &singleflight.Group{},
@@ -214,8 +210,6 @@ func (s *noteService) WithClient(clientType, name, version string) NoteService {
 		clientName:     name,
 		clientVer:      version,
 		config:         s.config,
-		backupService:  s.backupService,
-		gitSyncService: s.gitSyncService,
 		eventPublisher: s.eventPublisher,
 		countTimers:    s.countTimers, // Share the same timer map // 共享同一个计时器 map
 	}
@@ -474,13 +468,6 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			NoteHistoryDelayPush(updated.ID, uid)
 			s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionModify, updated, "", "content", "mtime")
 
-			if s.backupService != nil {
-				go s.backupService.NotifyUpdated(uid)
-			}
-			if s.gitSyncService != nil {
-				go s.gitSyncService.NotifyUpdated(uid, vaultID)
-			}
-
 			return &result{isNew: isNew, dto: s.domainToDTO(updated)}, nil
 		}
 
@@ -516,14 +503,6 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		go s.UpdateNoteLinks(context.Background(), created.ID, params.Content, vaultID, uid)
 		NoteHistoryDelayPush(created.ID, uid)
 		s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionCreate, created, "", "content", "mtime")
-		if s.backupService != nil {
-			go s.backupService.NotifyUpdated(uid)
-		}
-
-		if s.gitSyncService != nil {
-			go s.gitSyncService.NotifyUpdated(uid, vaultID)
-		}
-
 		return &result{isNew: isNew, dto: s.domainToDTO(created)}, nil
 	}
 
@@ -586,13 +565,6 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	// UpdatedTimestamp back onto it), no re-query needed
 	NoteHistoryDelayPush(note.ID, uid)
 	s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionDelete, note, "", "action")
-	if s.backupService != nil {
-		go s.backupService.NotifyUpdated(uid)
-	}
-	if s.gitSyncService != nil {
-		go s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
-
 	return s.domainToDTO(note), nil
 }
 
@@ -650,13 +622,6 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 
 	NoteHistoryDelayPush(updated.ID, uid)
 	s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionRestore, updated, "", "action", "mtime")
-	if s.backupService != nil {
-		go s.backupService.NotifyUpdated(uid)
-	}
-	if s.gitSyncService != nil {
-		go s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
-
 	return s.domainToDTO(updated), nil
 }
 
@@ -786,12 +751,6 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 			)
 		}
 		go s.Migrate(context.Background(), n.ID, newNoteCreated.ID, uid)
-		if s.backupService != nil {
-			go s.backupService.NotifyUpdated(uid)
-		}
-		if s.gitSyncService != nil {
-			go s.gitSyncService.NotifyUpdated(uid, vaultID)
-		}
 		s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionRename, newNoteCreated, oldPath, "path")
 
 		return &result{oldNote: s.domainToDTO(oldNote), newNote: s.domainToDTO(newNoteCreated)}, nil

@@ -136,7 +136,7 @@ func (s *syncLogService) Log(
 		Status:        1, // success // 成功
 		CreatedAt:     timex.Now(),
 	}
-	if s.automationPublisher != nil && logType == domain.SyncLogTypeFile {
+	if s.automationPublisher != nil && (logType == domain.SyncLogTypeFile || logType == domain.SyncLogTypeFolder) {
 		s.automationPublisher.Publish(context.Background(), automationEventFromSyncLog(entry))
 	}
 

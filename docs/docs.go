@@ -5931,14 +5931,6 @@ const docTemplate = `{
                     "description": "Created at // 创建时间",
                     "type": "string"
                 },
-                "cronExpression": {
-                    "description": "Cron expression // Cron表达式",
-                    "type": "string"
-                },
-                "cronStrategy": {
-                    "description": "Cron strategy // 定时策略",
-                    "type": "string"
-                },
                 "id": {
                     "description": "Config ID // 配置ID",
                     "type": "integer"
@@ -5962,10 +5954,6 @@ const docTemplate = `{
                 "lastStatus": {
                     "description": "Last status (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Stopped) // 上次状态 (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Stopped)",
                     "type": "integer"
-                },
-                "nextRunTime": {
-                    "description": "Next run time // 下次运行时间",
-                    "type": "string"
                 },
                 "passwordMode": {
                     "description": "Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码, 2:随机密码)",
@@ -6004,27 +5992,10 @@ const docTemplate = `{
         "dto.BackupConfigRequest": {
             "type": "object",
             "required": [
-                "cronStrategy",
                 "storageIds",
                 "type"
             ],
             "properties": {
-                "cronExpression": {
-                    "description": "Cron expression // Cron 表达式",
-                    "type": "string",
-                    "example": "0 0 * * *"
-                },
-                "cronStrategy": {
-                    "description": "Cron strategy // 定时策略",
-                    "type": "string",
-                    "enum": [
-                        "daily",
-                        "weekly",
-                        "monthly",
-                        "custom"
-                    ],
-                    "example": "daily"
-                },
                 "id": {
                     "description": "ID // ID",
                     "type": "integer",
@@ -6454,10 +6425,6 @@ const docTemplate = `{
                     "description": "Created at // 创建时间",
                     "type": "string"
                 },
-                "delay": {
-                    "description": "Delay time (seconds) // 延迟时间（秒）",
-                    "type": "integer"
-                },
                 "id": {
                     "description": "Task ID // 任务ID",
                     "type": "integer"
@@ -6526,10 +6493,6 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
-                },
-                "delay": {
-                    "description": "Delay time (seconds) // 延迟时间（秒）",
-                    "type": "integer"
                 },
                 "id": {
                     "type": "integer"

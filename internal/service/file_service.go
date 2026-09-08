@@ -125,22 +125,18 @@ type fileService struct {
 	clientName     string                 // Client name // 客户端名称
 	clientVer      string                 // Client version // 客户端版本
 	config         *ServiceConfig         // Service configuration // 服务配置
-	backupService  BackupService          // Backup service // 备份服务
-	gitSyncService GitSyncService         // Git sync service // Git 同步服务
 	countTimers    *sync.Map              // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
 // NewFileService creates FileService instance
 // NewFileService 创建 FileService 实例
-func NewFileService(userRepo domain.UserRepository, fileRepo domain.FileRepository, noteRepo domain.NoteRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig) FileService {
+func NewFileService(userRepo domain.UserRepository, fileRepo domain.FileRepository, noteRepo domain.NoteRepository, vaultSvc VaultService, folderSvc FolderService, syncLogSvc SyncLogService, config *ServiceConfig) FileService {
 	return &fileService{
 		userRepo:       userRepo,
 		fileRepo:       fileRepo,
 		noteRepo:       noteRepo,
 		vaultService:   vaultSvc,
 		folderService:  folderSvc,
-		backupService:  backupSvc,
-		gitSyncService: gitSyncSvc,
 		syncLogService: syncLogSvc,
 		sf:             &singleflight.Group{},
 		kmu:            keyedmutex.New(),
@@ -286,12 +282,6 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 				if s.syncLogService != nil {
 					s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFile, domain.SyncLogActionModify, "mtime", file.Path, file.PathHash, s.clientType, s.clientName, s.clientVer, file.Size)
 				}
-				if s.backupService != nil {
-					safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-				}
-				if s.gitSyncService != nil {
-					go s.gitSyncService.NotifyUpdated(uid, vaultID)
-				}
 				return &result{isNew: isNew, dto: s.domainToDTO(file)}, nil
 			}
 
@@ -333,12 +323,6 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			safego.Go(zap.L(), func() {
 				s.folderService.SyncResourceFID(context.Background(), uid, vaultID, nil, []int64{updated.ID})
 			})
-			if s.backupService != nil {
-				safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-			}
-			if s.gitSyncService != nil {
-				go s.gitSyncService.NotifyUpdated(uid, vaultID)
-			}
 			return &result{isNew: isNew, dto: s.domainToDTO(updated)}, nil
 		}
 
@@ -370,12 +354,6 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 		safego.Go(zap.L(), func() {
 			s.folderService.SyncResourceFID(context.Background(), uid, vaultID, nil, []int64{created.ID})
 		})
-		if s.backupService != nil {
-			safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-		}
-		if s.gitSyncService != nil {
-			go s.gitSyncService.NotifyUpdated(uid, vaultID)
-		}
 		return &result{isNew: isNew, dto: s.domainToDTO(created)}, nil
 	}
 
@@ -417,12 +395,6 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 	}
 
 	go s.CountSizeSum(context.Background(), vaultID, uid)
-	if s.backupService != nil {
-		safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-	}
-	if s.gitSyncService != nil {
-		go s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
 	return s.domainToDTO(updated), nil
 }
 
@@ -467,12 +439,6 @@ func (s *fileService) Restore(ctx context.Context, uid int64, params *dto.FileRe
 	}
 
 	go s.CountSizeSum(context.Background(), vaultID, uid)
-	if s.backupService != nil {
-		safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-	}
-	if s.gitSyncService != nil {
-		go s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
 	return s.domainToDTO(updated), nil
 }
 
@@ -917,13 +883,6 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 			)
 		}
 
-		if s.backupService != nil {
-			safego.Go(zap.L(), func() { s.backupService.NotifyUpdated(uid) })
-		}
-		if s.gitSyncService != nil {
-			go s.gitSyncService.NotifyUpdated(uid, vaultID)
-		}
-
 		return &result{oldFile: s.domainToDTO(oldFile), newFile: s.domainToDTO(newFileCreated)}, nil
 	})
 
@@ -950,8 +909,6 @@ func (s *fileService) WithClient(clientType, name, version string) FileService {
 		clientName:     name,
 		clientVer:      version,
 		config:         s.config,
-		backupService:  s.backupService,
-		gitSyncService: s.gitSyncService,
 		countTimers:    s.countTimers, // Share the same timer map // 共享同一个计时器 map
 	}
 }

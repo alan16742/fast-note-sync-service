@@ -15,6 +15,7 @@ const (
 	AutomationEventContent AutomationEventType = "content"
 	AutomationEventManual  AutomationEventType = "manual"
 	AutomationEventFile    AutomationEventType = "file"
+	AutomationEventTodo    AutomationEventType = "todo"
 )
 
 const (

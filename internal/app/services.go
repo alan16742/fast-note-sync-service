@@ -74,24 +74,23 @@ func initServices(cfg *AppConfig, infra *Infra, repos *Repositories, logger *zap
 	s.BackupService = service.NewBackupService(repos.BackupRepo, repos.NoteRepo, repos.FolderRepo, repos.FileRepo, repos.VaultRepo, s.StorageService, &cfg.Storage, cfg.App.TempPath, logger)
 	s.GitSyncService = service.NewGitSyncService(repos.GitSyncRepo, repos.NoteRepo, repos.FolderRepo, repos.FileRepo, repos.VaultRepo, repos.SettingRepo, &cfg.Git, logger)
 
-	webhookDispatcher := service.NewWebhookDispatcher(repos.WebhookRepo, infra.workerPool, nil, logger)
 	s.WebhookService = service.NewWebhookService(repos.WebhookRepo)
-	s.AutomationService = service.NewAutomationService(repos.AutomationRepo, s.BackupService, s.GitSyncService, s.WebhookService, webhookDispatcher, infra.workerPool, logger)
+	s.AutomationService = service.NewAutomationService(repos.AutomationRepo, repos.VaultRepo, s.BackupService, s.GitSyncService, s.WebhookService, infra.workerPool, logger)
 
 	// Initialize SyncLogService after AutomationService so file events can be
 	// published through the same trigger layer.
 	// 在 AutomationService 之后初始化 SyncLogService，使文件事件进入统一触发器层。
 	s.SyncLogService = service.NewSyncLogService(repos.SyncLogRepo, logger, s.AutomationService)
-	s.ReminderService = service.NewReminderService(repos.UserRepo, repos.VaultRepo, repos.NoteRepo, repos.WebhookRepo, repos.ReminderRepo, logger)
+	s.ReminderService = service.NewReminderService(repos.UserRepo, repos.VaultRepo, repos.NoteRepo, repos.AutomationRepo, s.WebhookService, repos.ReminderRepo, logger)
 
-	s.FolderService = service.NewFolderService(repos.FolderRepo, repos.NoteRepo, repos.FileRepo, s.VaultService, s.BackupService, s.GitSyncService, s.SyncLogService, infra.workerPool)
-	s.NoteService = service.NewNoteService(repos.UserRepo, repos.NoteRepo, repos.NoteLinkRepo, repos.FileRepo, repos.ShareRepo, repos.NoteHistoryRepo, s.VaultService, s.FolderService, s.BackupService, s.GitSyncService, s.SyncLogService, svcConfig, s.AutomationService)
+	s.FolderService = service.NewFolderService(repos.FolderRepo, repos.NoteRepo, repos.FileRepo, s.VaultService, s.SyncLogService, infra.workerPool, s.AutomationService)
+	s.NoteService = service.NewNoteService(repos.UserRepo, repos.NoteRepo, repos.NoteLinkRepo, repos.FileRepo, repos.ShareRepo, repos.NoteHistoryRepo, s.VaultService, s.FolderService, s.SyncLogService, svcConfig, s.AutomationService)
 	s.TokenService = service.NewTokenService(repos.AuthTokenRepo, repos.AuthTokenLogRepo, infra.TokenManager, logger, svcConfig.Token)
 	s.UserService = service.NewUserService(repos.UserRepo, infra.TokenManager, s.TokenService, logger, svcConfig)
 	s.OIDCService = service.NewOIDCService(repos.UserRepo, repos.OIDCIdentityRepo, s.TokenService)
-	s.FileService = service.NewFileService(repos.UserRepo, repos.FileRepo, repos.NoteRepo, s.VaultService, s.FolderService, s.BackupService, s.GitSyncService, s.SyncLogService, svcConfig)
+	s.FileService = service.NewFileService(repos.UserRepo, repos.FileRepo, repos.NoteRepo, s.VaultService, s.FolderService, s.SyncLogService, svcConfig)
 	s.SettingService = service.NewSettingService(repos.SettingRepo, s.VaultService, s.SyncLogService, svcConfig)
-	s.NoteHistoryService = service.NewNoteHistoryService(repos.NoteHistoryRepo, repos.NoteRepo, repos.UserRepo, s.VaultService, s.FolderService, s.NoteService, s.BackupService, s.GitSyncService, logger, &svcConfig.App)
+	s.NoteHistoryService = service.NewNoteHistoryService(repos.NoteHistoryRepo, repos.NoteRepo, repos.UserRepo, s.VaultService, s.FolderService, s.NoteService, logger, &svcConfig.App, s.AutomationService)
 	s.ConflictService = service.NewConflictService(repos.NoteRepo, s.VaultService, logger)
 	s.ShareService = service.NewShareService(repos.ShareRepo, infra.TokenManager, repos.NoteRepo, repos.FileRepo, repos.VaultRepo, logger, svcConfig)
 	s.NoteLinkService = service.NewNoteLinkService(repos.NoteLinkRepo, repos.NoteRepo, s.VaultService)

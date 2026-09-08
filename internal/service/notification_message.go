@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -24,8 +23,8 @@ var notificationTemplatePattern = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_]+)\s*\
 
 // defaultWebhookTemplates returns the templates used when the user leaves a
 // template blank.
-func defaultWebhookTemplates(mode string) (string, string) {
-	if normalizeNotificationMode(mode) == domain.NotificationModeReminder {
+func defaultWebhookTemplates(reminder bool) (string, string) {
+	if reminder {
 		return defaultReminderTitleTemplate, defaultReminderBodyTemplate
 	}
 	return defaultNoteTitleTemplate, defaultNoteBodyTemplate
@@ -46,12 +45,8 @@ func renderNotificationTemplate(template string, values map[string]string) strin
 	})
 }
 
-func notificationTemplates(subscription *domain.WebhookSubscription) (string, string) {
-	mode := domain.NotificationModeNoteChange
-	if subscription != nil {
-		mode = subscription.Mode
-	}
-	title, body := defaultWebhookTemplates(mode)
+func notificationTemplates(subscription *domain.WebhookSubscription, reminder bool) (string, string) {
+	title, body := defaultWebhookTemplates(reminder)
 	if subscription != nil {
 		if subscription.TitleTemplate != "" {
 			title = subscription.TitleTemplate
@@ -86,7 +81,7 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 	if path == "" {
 		path = event.OldPath
 	}
-	titleTemplate, bodyTemplate := notificationTemplates(subscription)
+	titleTemplate, bodyTemplate := notificationTemplates(subscription, false)
 	values := map[string]string{
 		"content":        event.Content,
 		"vault":          event.VaultName,
@@ -110,7 +105,7 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 }
 
 func messageForReminder(subscription *domain.WebhookSubscription, title, due, timezone, vault, path, content, link string) notification.Message {
-	titleTemplate, bodyTemplate := notificationTemplates(subscription)
+	titleTemplate, bodyTemplate := notificationTemplates(subscription, true)
 	values := map[string]string{
 		"title":          title,
 		"due":            due,
@@ -140,18 +135,6 @@ func messageForReminder(subscription *domain.WebhookSubscription, title, due, ti
 func messageForTest(subscription *domain.WebhookSubscription) notification.Message {
 	if subscription == nil {
 		subscription = &domain.WebhookSubscription{}
-	}
-	if normalizeNotificationMode(subscription.Mode) == domain.NotificationModeReminder {
-		timezone := subscription.Timezone
-		if timezone == "" {
-			timezone = "Asia/Shanghai"
-		}
-		location, err := time.LoadLocation(timezone)
-		if err != nil {
-			location = time.FixedZone("test", 0)
-		}
-		due := time.Date(2026, 1, 1, 9, 0, 0, 0, location).Format("2006-01-02 15:04")
-		return messageForReminder(subscription, "测试待办", due, timezone, "测试笔记库", "test-note.md", "这是一条测试提醒。", "")
 	}
 	return messageForNoteEvent(&domain.ContentChangeEvent{
 		VaultName: "测试笔记库",

@@ -62,8 +62,7 @@ type noteHistoryService struct {
 	vaultService   VaultService                 // Vault service // 仓库服务
 	folderService  FolderService                // Folder service // 文件夹服务
 	noteService    NoteService                  // Note service // 笔记服务
-	backupService  BackupService                // Backup service // 备份服务
-	gitSyncService GitSyncService               // Git sync service // Git 同步服务
+	eventPublisher NoteEventPublisher           // Note event publisher // 笔记事件发布器
 	sf             *singleflight.Group          // Singleflight group // 并发请求合并组
 	logger         *zap.Logger                  // Logger // 日志对象
 	config         *AppServiceConfig            // Service configuration // 服务配置
@@ -71,10 +70,14 @@ type noteHistoryService struct {
 
 // NewNoteHistoryService creates NoteHistoryService instance
 // NewNoteHistoryService 创建 NoteHistoryService 实例
-func NewNoteHistoryService(historyRepo domain.NoteHistoryRepository, noteRepo domain.NoteRepository, userRepo domain.UserRepository, vaultSvc VaultService, folderSvc FolderService, noteSvc NoteService, backupSvc BackupService, gitSyncSvc GitSyncService, logger *zap.Logger, config *AppServiceConfig) NoteHistoryService {
+func NewNoteHistoryService(historyRepo domain.NoteHistoryRepository, noteRepo domain.NoteRepository, userRepo domain.UserRepository, vaultSvc VaultService, folderSvc FolderService, noteSvc NoteService, logger *zap.Logger, config *AppServiceConfig, publishers ...NoteEventPublisher) NoteHistoryService {
 	if config == nil {
 		defaultHistoryKeepVersions := 100
 		config = &AppServiceConfig{HistoryKeepVersions: &defaultHistoryKeepVersions}
+	}
+	var eventPublisher NoteEventPublisher
+	if len(publishers) > 0 {
+		eventPublisher = publishers[0]
 	}
 	return &noteHistoryService{
 		historyRepo:    historyRepo,
@@ -83,8 +86,7 @@ func NewNoteHistoryService(historyRepo domain.NoteHistoryRepository, noteRepo do
 		vaultService:   vaultSvc,
 		folderService:  folderSvc,
 		noteService:    noteSvc,
-		backupService:  backupSvc,
-		gitSyncService: gitSyncSvc,
+		eventPublisher: eventPublisher,
 		sf:             &singleflight.Group{},
 		logger:         logger,
 		config:         config,
@@ -394,15 +396,8 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	go s.noteService.UpdateNoteLinks(context.Background(), updated.ID, updated.Content, vaultID, uid)
 
 	NoteHistoryDelayPush(updated.ID, uid)
+	publishNoteChangeEvent(ctx, s.eventPublisher, uid, vaultID, "", domain.WebhookActionModify, updated, "", "content", "mtime")
 
-	// Notify backup and git sync services
-	// 通知备份和 Git 同步服务
-	if s.backupService != nil {
-		go s.backupService.NotifyUpdated(uid)
-	}
-	if s.gitSyncService != nil {
-		go s.gitSyncService.NotifyUpdated(uid, vaultID)
-	}
 	if err := s.ProcessDelay(ctx, updated.ID, uid); err != nil {
 		s.logger.Warn("RestoreFromHistory: failed to create history",
 			zap.Int64("noteID", updated.ID),

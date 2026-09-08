@@ -21,8 +21,6 @@ func TestValidateWebhookRequest(t *testing.T) {
 		{name: "reject unsupported scheme", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderBark, Secret: "device-key", URL: "ftp://example.com/push"}},
 		{name: "reject localhost", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderBark, Secret: "device-key", URL: "http://localhost/push"}},
 		{name: "reject private ip", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderBark, Secret: "device-key", URL: "http://127.0.0.1/push"}},
-		{name: "reject invalid regex", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderBark, Secret: "device-key", URL: "https://example.com/push", BodyRegex: "["}},
-		{name: "reject unknown action", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderBark, Secret: "device-key", URL: "https://example.com/push", Actions: []domain.WebhookAction{"unknown"}}},
 		{name: "serverchan uses credential instead of url", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderServerChan, Secret: "sctp123tTestKey"}, valid: true},
 		{name: "custom webhook", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderCustom, URL: "https://example.com/hook", Method: "POST", Headers: map[string]string{"Authorization": "Bearer token"}}, valid: true},
 		{name: "custom webhook requires url", request: &dto.WebhookSubscriptionRequest{Provider: domain.WebhookProviderCustom, Method: "GET"}},
@@ -42,9 +40,6 @@ type webhookRepositoryStub struct {
 }
 
 func (s *webhookRepositoryStub) List(context.Context, int64) ([]*domain.WebhookSubscription, error) {
-	return []*domain.WebhookSubscription{s.item}, nil
-}
-func (s *webhookRepositoryStub) ListEnabled(context.Context, int64) ([]*domain.WebhookSubscription, error) {
 	return []*domain.WebhookSubscription{s.item}, nil
 }
 func (s *webhookRepositoryStub) GetByID(context.Context, int64, int64) (*domain.WebhookSubscription, error) {
@@ -78,24 +73,22 @@ func TestWebhookSaveDefaultsAndCredentialSwitch(t *testing.T) {
 	ctx := context.Background()
 	repo := &webhookRepositoryStub{}
 	svc := NewWebhookService(repo)
-	request := &dto.WebhookSubscriptionRequest{Provider: "bark", Mode: "reminder", Secret: "device-key"}
+	request := &dto.WebhookSubscriptionRequest{Provider: "bark", Secret: "device-key"}
 	item, err := svc.Save(ctx, 2, request)
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.day.app", item.URL)
-	assert.Equal(t, "Asia/Shanghai", item.Timezone)
-	assert.Equal(t, defaultReminderTitleTemplate, item.TitleTemplate)
-	assert.Equal(t, defaultReminderBodyTemplate, item.BodyTemplate)
+	assert.Equal(t, defaultNoteTitleTemplate, item.TitleTemplate)
+	assert.Equal(t, defaultNoteBodyTemplate, item.BodyTemplate)
 	assert.Equal(t, "", request.URL, "normalization must not mutate the caller")
 	repo.item.ID = 1
 	_, err = svc.Save(ctx, 2, &dto.WebhookSubscriptionRequest{ID: 1, Provider: "serverchan"})
 	require.ErrorContains(t, err, "new credential")
-	_, err = svc.Save(ctx, 2, &dto.WebhookSubscriptionRequest{ID: 1, Provider: "bark", Mode: "reminder"})
+	_, err = svc.Save(ctx, 2, &dto.WebhookSubscriptionRequest{ID: 1, Provider: "bark"})
 	require.NoError(t, err)
 	assert.Equal(t, "device-key", repo.item.Secret)
 	for _, request := range []*dto.WebhookSubscriptionRequest{
-		{Provider: "bark", Mode: "reminder", Secret: "key", Timezone: "not/a/timezone"},
-		{Provider: "bark", Secret: "key", PathGlob: "["},
-		{Provider: "serverchan", Secret: "invalid"},
+		{Provider: domain.WebhookProviderCustom, URL: "https://example.com", Method: "PATCH"},
+		{Provider: "serverchan"},
 	} {
 		_, err := svc.Save(ctx, 2, request)
 		require.Error(t, err)
@@ -104,7 +97,7 @@ func TestWebhookSaveDefaultsAndCredentialSwitch(t *testing.T) {
 
 func TestWebhookServiceTestUsesSavedTemplates(t *testing.T) {
 	repo := &webhookRepositoryStub{item: &domain.WebhookSubscription{
-		ID: 1, UID: 2, Provider: domain.WebhookProviderBark, Secret: "device-key", Mode: domain.NotificationModeNoteChange,
+		ID: 1, UID: 2, Provider: domain.WebhookProviderBark, Secret: "device-key",
 		TitleTemplate: "Test {{action}} {{path}}", BodyTemplate: "{{vault}}/{{path}}: {{content}}",
 	}}
 	svc := NewWebhookService(repo).(*webhookService)
@@ -123,9 +116,9 @@ func TestWebhookServiceTestRequestUsesDraftTemplates(t *testing.T) {
 	svc.senders[domain.WebhookProviderBark] = sender
 
 	require.NoError(t, svc.TestRequest(context.Background(), 2, &dto.WebhookSubscriptionRequest{
-		Provider: domain.WebhookProviderBark, Mode: domain.NotificationModeReminder, URL: "https://example.com", Secret: "device-key",
-		Timezone: "UTC", TitleTemplate: "{{title}}", BodyTemplate: "{{due}}|{{vault}}|{{path}}",
+		Provider: domain.WebhookProviderBark, URL: "https://example.com", Secret: "device-key",
+		TitleTemplate: "{{action}}", BodyTemplate: "{{vault}}|{{path}}|{{content}}",
 	}))
-	assert.Equal(t, "测试待办", sender.message.Title)
-	assert.Equal(t, "2026-01-01 09:00|测试笔记库|test-note.md", sender.message.Body)
+	assert.Equal(t, "modify", sender.message.Title)
+	assert.Equal(t, "测试笔记库|test-note.md|这是一条测试通知。", sender.message.Body)
 }

@@ -144,7 +144,6 @@ func (r *gitSyncRepository) toDomain(m *model.GitSyncConfig) *domain.GitSyncConf
 		Password:      m.Password,
 		Branch:        m.Branch,
 		IsEnabled:     m.IsEnabled == 1,
-		Delay:         m.Delay,
 		RetentionDays: m.RetentionDays,
 		LastSyncTime:  lastSyncTime,
 		LastStatus:    m.LastStatus,
@@ -181,7 +180,6 @@ func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfi
 		Password:      d.Password,
 		Branch:        d.Branch,
 		IsEnabled:     isEnabled,
-		Delay:         d.Delay,
 		RetentionDays: d.RetentionDays,
 		LastSyncTime:  lastSyncTime,
 		LastStatus:    d.LastStatus,
@@ -287,25 +285,6 @@ func (r *gitSyncRepository) ListByVaultID(ctx context.Context, vaultID, uid int6
 		res = append(res, r.toDomain(m))
 	}
 	return res, nil
-}
-
-func (r *gitSyncRepository) ListEnabled(ctx context.Context) ([]*domain.GitSyncConfig, error) {
-	uids, err := r.dao.GetAllUserUIDs()
-	if err != nil {
-		return nil, err
-	}
-	var all []*domain.GitSyncConfig
-	for _, uid := range uids {
-		q := r.gitSync(uid).GitSyncConfig
-		ms, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.IsEnabled.Eq(1)).Find()
-		if err != nil {
-			continue
-		}
-		for _, m := range ms {
-			all = append(all, r.toDomain(m))
-		}
-	}
-	return all, nil
 }
 
 func (r *gitSyncRepository) DeleteHistory(ctx context.Context, uid int64, configID int64) error {

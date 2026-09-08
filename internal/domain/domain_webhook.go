@@ -30,11 +30,6 @@ const (
 	WebhookProviderCustom     = "custom"
 )
 
-const (
-	NotificationModeNoteChange = "note_change"
-	NotificationModeReminder   = "reminder"
-)
-
 // ContentChangeEvent is the stable event contract shared by webhook channels.
 type ContentChangeEvent struct {
 	ID            string
@@ -57,30 +52,18 @@ type ContentChangeEvent struct {
 	Source        string
 }
 
-// WebhookBodyMatcher controls optional matching against note content.
-type WebhookBodyMatcher struct {
-	Substring string
-	Regex     string
-	MaxBytes  int
-}
-
-// WebhookSubscription contains one user's webhook filtering and delivery settings.
+// WebhookSubscription contains one user's notification channel settings.
+// Event conditions belong to AutomationTrigger; this record only owns the
+// provider, credentials, transport, and rendered message templates.
 type WebhookSubscription struct {
 	ID            int64
 	UID           int64
 	Enabled       bool
 	Provider      string
-	Mode          string
-	Timezone      string
 	URL           string
 	Method        string
 	Headers       map[string]string
 	Secret        string
-	VaultID       int64
-	Actions       []WebhookAction
-	PathPrefix    string
-	PathGlob      string
-	BodyMatcher   WebhookBodyMatcher
 	TitleTemplate string
 	BodyTemplate  string
 	CreatedAt     time.Time
@@ -90,7 +73,6 @@ type WebhookSubscription struct {
 // WebhookRepository stores user-owned webhook subscriptions.
 type WebhookRepository interface {
 	List(ctx context.Context, uid int64) ([]*WebhookSubscription, error)
-	ListEnabled(ctx context.Context, uid int64) ([]*WebhookSubscription, error)
 	GetByID(ctx context.Context, id, uid int64) (*WebhookSubscription, error)
 	Save(ctx context.Context, subscription *WebhookSubscription, uid int64) (*WebhookSubscription, error)
 	Delete(ctx context.Context, id, uid int64) error

@@ -61,14 +61,6 @@ func (m *MockGitSyncRepository) ListByVaultID(ctx context.Context, vaultID, uid 
 	return args.Get(0).([]*domain.GitSyncConfig), args.Error(1)
 }
 
-func (m *MockGitSyncRepository) ListEnabled(ctx context.Context) ([]*domain.GitSyncConfig, error) {
-	args := m.Called(ctx)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]*domain.GitSyncConfig), args.Error(1)
-}
-
 func (m *MockGitSyncRepository) CreateHistory(ctx context.Context, history *domain.GitSyncHistory, uid int64) (*domain.GitSyncHistory, error) {
 	args := m.Called(ctx, history, uid)
 	if args.Get(0) == nil {

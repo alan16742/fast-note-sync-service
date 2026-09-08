@@ -280,15 +280,11 @@ CREATE TABLE "backup_config" (
     "storage_ids" text DEFAULT '',
     -- JSON array of storage ids: [1, 2]
     "is_enabled" integer DEFAULT 0,
-    "cron_strategy" text DEFAULT '',
-    -- daily, weekly, monthly, custom
-    "cron_expression" text DEFAULT '',
     "include_vault_name" integer DEFAULT 0,
     -- Whether to include vault name in backup file name
     "retention_days" integer DEFAULT 10,
     -- Retention policy (days)
     "last_run_time" datetime DEFAULT NULL,
-    "next_run_time" datetime DEFAULT NULL,
     "last_status" integer DEFAULT 0,
     -- 0: Idle, 1: Running, 2: Success, 3: Failed, 4: Stopped, 5: Success but no update
     "last_message" text DEFAULT '',
@@ -299,8 +295,6 @@ CREATE TABLE "backup_config" (
 );
 
 CREATE INDEX "idx_backup_config_uid" ON "backup_config" ("uid");
-
-CREATE INDEX "idx_backup_config_next_run_time" ON "backup_config" ("next_run_time");
 
 -- ----------------------------
 -- Table structure for backup_history
@@ -352,8 +346,6 @@ CREATE TABLE "git_sync_config" (
     -- 分支名
     "is_enabled" integer DEFAULT 0,
     -- 是否启用自动同步
-    "delay" integer DEFAULT 0,
-    -- 延迟时间（例如同步前等待的时间，单位可以是秒或分钟）
     "retention_days" integer DEFAULT 0,
     -- 历史记录保留天数, 0: 不清理, -1: 仅保留最新, >0: 保留天数
     "last_sync_time" datetime DEFAULT NULL,

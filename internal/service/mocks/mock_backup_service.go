@@ -55,15 +55,6 @@ func (m *MockBackupService) ExecuteUserBackup(ctx context.Context, uid int64, co
 	return args.Error(0)
 }
 
-func (m *MockBackupService) ExecuteTaskBackups(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
-}
-
-func (m *MockBackupService) NotifyUpdated(uid int64) {
-	m.Called(uid)
-}
-
 func (m *MockBackupService) Shutdown(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

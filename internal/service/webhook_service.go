@@ -7,10 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
-	"regexp"
 	"strings"
-	"time"
 	_ "time/tzdata"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -35,6 +32,7 @@ type WebhookService interface {
 	Save(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) (*dto.WebhookSubscriptionDTO, error)
 	Delete(ctx context.Context, uid, id int64) error
 	DeliverEvent(ctx context.Context, uid, id int64, event *domain.ContentChangeEvent) error
+	DeliverReminder(ctx context.Context, uid, id int64, title, due, timezone, vault, path, content, link string) error
 	Test(ctx context.Context, uid, id int64) error
 	TestRequest(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) error
 }
@@ -72,11 +70,6 @@ func (s *webhookService) Save(ctx context.Context, uid int64, request *dto.Webho
 	}
 	value := *request
 	value.Provider = normalizeWebhookProvider(value.Provider)
-	value.Mode = normalizeNotificationMode(value.Mode)
-	value.Timezone = strings.TrimSpace(value.Timezone)
-	if value.Timezone == "" {
-		value.Timezone = "Asia/Shanghai"
-	}
 	value.URL = strings.TrimSpace(value.URL)
 	if value.Provider == domain.WebhookProviderBark && value.URL == "" {
 		value.URL = bark.DefaultEndpoint
@@ -90,13 +83,6 @@ func (s *webhookService) Save(ctx context.Context, uid int64, request *dto.Webho
 	} else {
 		value.Method = ""
 		value.Headers = nil
-	}
-	defaultTitle, defaultBody := defaultWebhookTemplates(value.Mode)
-	if strings.TrimSpace(value.TitleTemplate) == "" {
-		value.TitleTemplate = defaultTitle
-	}
-	if strings.TrimSpace(value.BodyTemplate) == "" {
-		value.BodyTemplate = defaultBody
 	}
 	secret := value.Secret
 	if value.Provider == domain.WebhookProviderCustom {
@@ -124,9 +110,7 @@ func (s *webhookService) Save(ctx context.Context, uid int64, request *dto.Webho
 	}
 	request = &value
 	item, err := s.repo.Save(ctx, &domain.WebhookSubscription{
-		ID: request.ID, UID: uid, Enabled: request.Enabled, Provider: request.Provider, Mode: request.Mode, Timezone: request.Timezone, URL: strings.TrimSpace(request.URL), Method: request.Method, Headers: request.Headers, Secret: secret,
-		VaultID: request.VaultID, Actions: request.Actions, PathPrefix: strings.TrimSpace(request.PathPrefix), PathGlob: strings.TrimSpace(request.PathGlob),
-		BodyMatcher:   domain.WebhookBodyMatcher{Substring: request.BodySubstring, Regex: request.BodyRegex, MaxBytes: request.BodyMaxBytes},
+		ID: request.ID, UID: uid, Enabled: request.Enabled, Provider: request.Provider, URL: strings.TrimSpace(request.URL), Method: request.Method, Headers: request.Headers, Secret: secret,
 		TitleTemplate: request.TitleTemplate, BodyTemplate: request.BodyTemplate,
 	}, uid)
 	if err != nil {
@@ -171,6 +155,32 @@ func (s *webhookService) DeliverEvent(ctx context.Context, uid, id int64, event 
 	return sendNotification(sendCtx, sender, subscription, messageForNoteEvent(event, subscription))
 }
 
+// DeliverReminder sends a task reminder through one configured notification
+// target. The reminder trigger owns scheduling and timezone; the channel only
+// owns credentials and transport.
+func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, title, due, timezone, vault, path, content, link string) error {
+	if id <= 0 {
+		return errors.New("webhook subscription id is required")
+	}
+	subscription, err := s.repo.GetByID(ctx, id, uid)
+	if err != nil {
+		return err
+	}
+	if subscription == nil {
+		return errors.New("webhook subscription not found")
+	}
+	if !subscription.Enabled {
+		return errors.New("webhook subscription is disabled")
+	}
+	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
+	if sender == nil {
+		return fmt.Errorf("unsupported webhook provider: %s", subscription.Provider)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, notification.Timeout)
+	defer cancel()
+	return sendNotification(sendCtx, sender, subscription, messageForReminder(subscription, title, due, timezone, vault, path, content, link))
+}
+
 // Test sends a synthetic message through a saved subscription. It intentionally
 // does not require the channel to be enabled: this lets a user validate a new
 // credential before turning the channel on.
@@ -201,11 +211,6 @@ func (s *webhookService) TestRequest(ctx context.Context, uid int64, request *dt
 	}
 	value := *request
 	value.Provider = normalizeWebhookProvider(value.Provider)
-	value.Mode = normalizeNotificationMode(value.Mode)
-	value.Timezone = strings.TrimSpace(value.Timezone)
-	if value.Timezone == "" {
-		value.Timezone = "Asia/Shanghai"
-	}
 	value.URL = strings.TrimSpace(value.URL)
 	if value.Provider == domain.WebhookProviderBark && value.URL == "" {
 		value.URL = bark.DefaultEndpoint
@@ -220,13 +225,6 @@ func (s *webhookService) TestRequest(ctx context.Context, uid int64, request *dt
 	} else {
 		value.Method = ""
 		value.Headers = nil
-	}
-	defaultTitle, defaultBody := defaultWebhookTemplates(value.Mode)
-	if strings.TrimSpace(value.TitleTemplate) == "" {
-		value.TitleTemplate = defaultTitle
-	}
-	if strings.TrimSpace(value.BodyTemplate) == "" {
-		value.BodyTemplate = defaultBody
 	}
 	if value.Provider != domain.WebhookProviderCustom && value.ID > 0 && strings.TrimSpace(value.Secret) == "" {
 		old, err := s.repo.GetByID(ctx, value.ID, uid)
@@ -246,9 +244,7 @@ func (s *webhookService) TestRequest(ctx context.Context, uid int64, request *dt
 		return err
 	}
 	subscription := &domain.WebhookSubscription{
-		ID: value.ID, UID: uid, Enabled: value.Enabled, Provider: value.Provider, Mode: value.Mode, Timezone: value.Timezone, URL: value.URL, Method: value.Method, Headers: value.Headers, Secret: value.Secret,
-		VaultID: value.VaultID, Actions: value.Actions, PathPrefix: strings.TrimSpace(value.PathPrefix), PathGlob: strings.TrimSpace(value.PathGlob),
-		BodyMatcher:   domain.WebhookBodyMatcher{Substring: value.BodySubstring, Regex: value.BodyRegex, MaxBytes: value.BodyMaxBytes},
+		ID: value.ID, UID: uid, Enabled: value.Enabled, Provider: value.Provider, URL: value.URL, Method: value.Method, Headers: value.Headers, Secret: value.Secret,
 		TitleTemplate: value.TitleTemplate, BodyTemplate: value.BodyTemplate,
 	}
 	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
@@ -292,17 +288,8 @@ func validateWebhookRequest(request *dto.WebhookSubscriptionRequest) error {
 			return err
 		}
 	}
-	if request.ID < 0 || request.VaultID < 0 {
-		return errors.New("invalid subscription or vault ID")
-	}
-	mode := normalizeNotificationMode(request.Mode)
-	if mode != domain.NotificationModeNoteChange && mode != domain.NotificationModeReminder {
-		return errors.New("invalid notification mode")
-	}
-	if request.Timezone != "" {
-		if _, err := time.LoadLocation(request.Timezone); err != nil {
-			return errors.New("invalid IANA timezone")
-		}
+	if request.ID < 0 {
+		return errors.New("invalid subscription ID")
 	}
 	if provider == domain.WebhookProviderServerChan {
 		if _, err := serverchan.Endpoint(strings.TrimSpace(request.Secret)); err != nil {
@@ -312,11 +299,6 @@ func validateWebhookRequest(request *dto.WebhookSubscriptionRequest) error {
 	if provider == domain.WebhookProviderBark {
 		if _, err := bark.Endpoint(request.URL); err != nil {
 			return err
-		}
-	}
-	if request.PathGlob != "" {
-		if _, err := path.Match(request.PathGlob, ""); err != nil {
-			return errors.New("invalid path glob")
 		}
 	}
 	if strings.TrimSpace(request.URL) != "" {
@@ -334,29 +316,11 @@ func validateWebhookRequest(request *dto.WebhookSubscriptionRequest) error {
 			return errors.New("notification endpoint must not target a private address")
 		}
 	}
-	if len(request.BodySubstring) > maxWebhookBodyBytes || len(request.BodyRegex) > maxWebhookBodyBytes {
-		return errors.New("webhook body matcher is too long")
-	}
 	if len(request.TitleTemplate) > 4096 {
 		return errors.New("webhook title template is too long")
 	}
 	if len(request.BodyTemplate) > maxWebhookBodyBytes {
 		return errors.New("webhook body template is too long")
-	}
-	if request.BodyRegex != "" {
-		if _, err := regexp.Compile(request.BodyRegex); err != nil {
-			return fmt.Errorf("invalid webhook body regex: %w", err)
-		}
-	}
-	if request.BodyMaxBytes < 0 || request.BodyMaxBytes > maxWebhookBodyBytes {
-		return errors.New("webhook body max bytes is out of range")
-	}
-	for _, action := range request.Actions {
-		switch action {
-		case domain.WebhookActionCreate, domain.WebhookActionModify, domain.WebhookActionRename, domain.WebhookActionDelete, domain.WebhookActionRestore, domain.WebhookActionPermanentDelete:
-		default:
-			return fmt.Errorf("unsupported webhook action: %s", action)
-		}
 	}
 	return nil
 }
@@ -439,23 +403,7 @@ func webhookToDTO(item *domain.WebhookSubscription) *dto.WebhookSubscriptionDTO 
 	if item == nil {
 		return nil
 	}
-	actions := item.Actions
-	if actions == nil {
-		actions = []domain.WebhookAction{}
-	}
-	timezone := item.Timezone
-	if timezone == "" {
-		timezone = "Asia/Shanghai"
-	}
-	titleTemplate, bodyTemplate := notificationTemplates(item)
+	titleTemplate, bodyTemplate := notificationTemplates(item, false)
 	headers := normalizeWebhookHeaders(item.Headers)
-	return &dto.WebhookSubscriptionDTO{ID: item.ID, UID: item.UID, Enabled: item.Enabled, Provider: normalizeWebhookProvider(item.Provider), Mode: normalizeNotificationMode(item.Mode), Timezone: timezone, URL: item.URL, Method: normalizeWebhookMethod(item.Method), Headers: headers, HasSecret: item.Secret != "", VaultID: item.VaultID, Actions: actions, PathPrefix: item.PathPrefix, PathGlob: item.PathGlob, BodySubstring: item.BodyMatcher.Substring, BodyRegex: item.BodyMatcher.Regex, BodyMaxBytes: item.BodyMatcher.MaxBytes, TitleTemplate: titleTemplate, BodyTemplate: bodyTemplate, CreatedAt: timex.Time(item.CreatedAt).String(), UpdatedAt: timex.Time(item.UpdatedAt).String()}
-}
-
-func normalizeNotificationMode(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return domain.NotificationModeNoteChange
-	}
-	return mode
+	return &dto.WebhookSubscriptionDTO{ID: item.ID, UID: item.UID, Enabled: item.Enabled, Provider: normalizeWebhookProvider(item.Provider), URL: item.URL, Method: normalizeWebhookMethod(item.Method), Headers: headers, HasSecret: item.Secret != "", TitleTemplate: titleTemplate, BodyTemplate: bodyTemplate, CreatedAt: timex.Time(item.CreatedAt).String(), UpdatedAt: timex.Time(item.UpdatedAt).String()}
 }

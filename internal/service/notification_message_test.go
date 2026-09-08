@@ -31,7 +31,6 @@ func TestMessageForNoteEventRendersCustomTemplates(t *testing.T) {
 
 func TestMessageForReminderRendersCustomTemplates(t *testing.T) {
 	message := messageForReminder(&domain.WebhookSubscription{
-		Mode:          domain.NotificationModeReminder,
 		TitleTemplate: "{{title}} @ {{due}}",
 		BodyTemplate:  "{{vault}}/{{path}} {{url}} {{content}}",
 	}, "todo", "2026-01-01 09:00", "Asia/Shanghai", "vault", "todo.md", "note", "obsidian://open")

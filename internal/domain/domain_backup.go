@@ -22,12 +22,9 @@ type BackupConfig struct {
 	Type             string    // full, incremental, sync
 	StorageIds       string    // JSON 数组，如 "[1, 2]"
 	IsEnabled        bool      // 是否启用
-	CronStrategy     string    // daily, weekly, monthly, custom
-	CronExpression   string    // Cron 表达式
 	IncludeVaultName bool      // 同步路径是否包含仓库名前缀
 	RetentionDays    int       // 保留天数
 	LastRunTime      time.Time // 上次运行时间
-	NextRunTime      time.Time // 下次运行时间
 	PasswordMode     int       // 密码模式 (0: 无密码, 1: 固定密码, 2: 随机密码)
 	PasswordValue    string    // 固定密码值
 	LastStatus       int       // 上次状态 (0: Idle, 1: Running, 2: Success, 3: Failed, 4: Stopped, 5: SuccessNoUpdate)
@@ -65,11 +62,6 @@ type BackupRepository interface {
 	DeleteConfig(ctx context.Context, id, uid int64) error
 	// SaveConfig 保存备份配置
 	SaveConfig(ctx context.Context, config *BackupConfig, uid int64) (*BackupConfig, error)
-	// ListEnabledConfigs 获取所有已启用的备份配置
-	ListEnabledConfigs(ctx context.Context) ([]*BackupConfig, error)
-	// UpdateNextRunTime 更新下次执行时间
-	UpdateNextRunTime(ctx context.Context, id, uid int64, nextRun time.Time) error
-
 	// CreateHistory 创建备份历史记录
 	CreateHistory(ctx context.Context, history *BackupHistory, uid int64) (*BackupHistory, error)
 	// ListHistory 分页获取备份历史记录
