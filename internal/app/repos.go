@@ -26,6 +26,7 @@ type Repositories struct {
 	OIDCIdentityRepo domain.OIDCIdentityRepository
 	WebhookRepo      domain.WebhookRepository
 	ReminderRepo     domain.ReminderRepository
+	AutomationRepo   domain.AutomationRepository
 }
 
 // initRepositories initializes all repositories
@@ -50,5 +51,6 @@ func initRepositories(d *dao.Dao) *Repositories {
 		OIDCIdentityRepo: dao.NewOIDCIdentityRepository(d),
 		WebhookRepo:      dao.NewWebhookRepository(d),
 		ReminderRepo:     dao.NewReminderRepository(d),
+		AutomationRepo:   dao.NewAutomationRepository(d),
 	}
 }

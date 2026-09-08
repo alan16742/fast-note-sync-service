@@ -34,6 +34,7 @@ type WebhookService interface {
 	List(ctx context.Context, uid int64) ([]*dto.WebhookSubscriptionDTO, error)
 	Save(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) (*dto.WebhookSubscriptionDTO, error)
 	Delete(ctx context.Context, uid, id int64) error
+	DeliverEvent(ctx context.Context, uid, id int64, event *domain.ContentChangeEvent) error
 	Test(ctx context.Context, uid, id int64) error
 	TestRequest(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) error
 }
@@ -139,6 +140,35 @@ func (s *webhookService) Delete(ctx context.Context, uid, id int64) error {
 		return errors.New("webhook subscription id is required")
 	}
 	return s.repo.Delete(ctx, id, uid)
+}
+
+// DeliverEvent sends an automation-selected event through one saved channel.
+// The channel remains the owner of provider credentials and transport details;
+// an automation trigger only stores its ID.
+func (s *webhookService) DeliverEvent(ctx context.Context, uid, id int64, event *domain.ContentChangeEvent) error {
+	if id <= 0 {
+		return errors.New("webhook subscription id is required")
+	}
+	if event == nil {
+		return errors.New("webhook event is required")
+	}
+	subscription, err := s.repo.GetByID(ctx, id, uid)
+	if err != nil {
+		return err
+	}
+	if subscription == nil {
+		return errors.New("webhook subscription not found")
+	}
+	if !subscription.Enabled {
+		return errors.New("webhook subscription is disabled")
+	}
+	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
+	if sender == nil {
+		return fmt.Errorf("unsupported webhook provider: %s", subscription.Provider)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, notification.Timeout)
+	defer cancel()
+	return sendNotification(sendCtx, sender, subscription, messageForNoteEvent(event, subscription))
 }
 
 // Test sends a synthetic message through a saved subscription. It intentionally

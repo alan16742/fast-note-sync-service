@@ -47,6 +47,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		backupHandler := api_router.NewBackupHandler(appContainer)
 		gitSyncHandler := api_router.NewGitSyncHandler(appContainer)
 		webhookHandler := api_router.NewWebhookHandler(appContainer)
+		automationHandler := api_router.NewAutomationHandler(appContainer)
 		settingHandler := api_router.NewSettingHandler(appContainer, wss)
 		syncLogHandler := api_router.NewSyncLogHandler(appContainer)
 		tokenHandler := api_router.NewTokenHandler(appContainer)
@@ -241,6 +242,13 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.PUT("/webhooks", webhookHandler.Save)
 				webguiGroup.DELETE("/webhooks", webhookHandler.Delete)
 				webguiGroup.POST("/webhooks/test", webhookHandler.Test)
+
+				// Automation routes
+				webguiGroup.GET("/automations", automationHandler.List)
+				webguiGroup.POST("/automations", automationHandler.Save)
+				webguiGroup.PUT("/automations", automationHandler.Save)
+				webguiGroup.DELETE("/automations", automationHandler.Delete)
+				webguiGroup.POST("/automations/trigger", automationHandler.Trigger)
 
 				// Sync log routes
 				// 同步日志路由

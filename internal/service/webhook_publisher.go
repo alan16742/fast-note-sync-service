@@ -9,7 +9,9 @@ import (
 )
 
 // NoteEventPublisher accepts note changes after they have been persisted.
-// Implementations must not make the original note operation fail.
+// The central implementation fans the event out to notification channels and
+// automation triggers. Implementations must not make the original note
+// operation fail.
 type NoteEventPublisher interface {
 	PublishNoteChange(ctx context.Context, event *domain.ContentChangeEvent)
 }

@@ -90,6 +90,9 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 	a.loadSupportRecords(efs)
 
 	a.ReminderService.Start()
+	if a.AutomationService != nil {
+		a.AutomationService.Start()
+	}
 	logger.Info("App container initialized successfully")
 	return a, nil
 }
@@ -97,11 +100,18 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 // Close releases resources held by application container
 // Close 释放应用容器持有的资源
 func (a *App) Close() error {
-	if a.Services != nil && a.ReminderService != nil {
+	if a.Services != nil && (a.ReminderService != nil || a.AutomationService != nil) {
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
 		defer cancel()
-		if err := a.ReminderService.Shutdown(ctx); err != nil {
-			return err
+		if a.AutomationService != nil {
+			if err := a.AutomationService.Shutdown(ctx); err != nil {
+				return err
+			}
+		}
+		if a.ReminderService != nil {
+			if err := a.ReminderService.Shutdown(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	if a.Dao != nil && a.Dao.BleveMgr != nil {
@@ -645,6 +655,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.wss.CloseAllConnections()
 		a.wss.WaitAllClosed(10 * time.Second)
 		a.logger.Info("All WebSocket connections closed")
+	}
+
+	// Stop the automation clock before target services are shut down. Queued
+	// target work is drained together with the shared worker pool below.
+	if a.AutomationService != nil {
+		a.logger.Info("Shutting down automation service...")
+		if err := a.AutomationService.Shutdown(ctx); err != nil {
+			a.logger.Warn("automation service shutdown error", zap.Error(err))
+		}
 	}
 
 	// 0.1 Shutdown ShareService (sync final statistics)

@@ -72,26 +72,32 @@ type syncLogQueueItem struct {
 // syncLogService implements SyncLogService
 // syncLogService 实现 SyncLogService 接口
 type syncLogService struct {
-	repo   domain.SyncLogRepository // Sync log repository // 同步日志仓储
-	logger *zap.Logger
-	ch     chan syncLogQueueItem
-	stopCh chan struct{}
-	doneCh chan struct{}
+	repo                domain.SyncLogRepository // Sync log repository // 同步日志仓储
+	logger              *zap.Logger
+	automationPublisher AutomationEventPublisher
+	ch                  chan syncLogQueueItem
+	stopCh              chan struct{}
+	doneCh              chan struct{}
 }
 
 // NewSyncLogService creates a new SyncLogService instance and starts its background
 // batch-flush worker.
 // NewSyncLogService 创建 SyncLogService 实例，并启动其后台批量 flush worker。
-func NewSyncLogService(repo domain.SyncLogRepository, logger *zap.Logger) SyncLogService {
+func NewSyncLogService(repo domain.SyncLogRepository, logger *zap.Logger, publishers ...AutomationEventPublisher) SyncLogService {
 	if logger == nil {
 		logger = zap.L()
 	}
+	var automationPublisher AutomationEventPublisher
+	if len(publishers) > 0 {
+		automationPublisher = publishers[0]
+	}
 	s := &syncLogService{
-		repo:   repo,
-		logger: logger,
-		ch:     make(chan syncLogQueueItem, syncLogChannelBuffer),
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		repo:                repo,
+		logger:              logger,
+		automationPublisher: automationPublisher,
+		ch:                  make(chan syncLogQueueItem, syncLogChannelBuffer),
+		stopCh:              make(chan struct{}),
+		doneCh:              make(chan struct{}),
 	}
 	safego.Go(logger, s.runBatchWorker)
 	return s
@@ -129,6 +135,9 @@ func (s *syncLogService) Log(
 		ClientVersion: clientVersion,
 		Status:        1, // success // 成功
 		CreatedAt:     timex.Now(),
+	}
+	if s.automationPublisher != nil && logType == domain.SyncLogTypeFile {
+		s.automationPublisher.Publish(context.Background(), automationEventFromSyncLog(entry))
 	}
 
 	select {

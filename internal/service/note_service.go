@@ -165,7 +165,7 @@ type noteService struct {
 	config         *ServiceConfig               // Service configuration // 服务配置
 	backupService  BackupService                // Backup service // 备份服务
 	gitSyncService GitSyncService               // Git sync service // Git 同步服务
-	eventPublisher NoteEventPublisher           // Webhook event publisher // Webhook 事件发布器
+	eventPublisher NoteEventPublisher           // Note event publisher (notifications + automation) // 笔记事件发布器（通知与自动化）
 	countTimers    *sync.Map                    // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
@@ -1382,10 +1382,11 @@ func (s *noteService) RecycleClear(ctx context.Context, uid int64, params *dto.N
 	}
 
 	// Log permanent delete for each item // 为每一项记录彻底删除日志
-	if s.syncLogService != nil {
-		for _, n := range notesToDelete {
+	for _, n := range notesToDelete {
+		if s.syncLogService != nil {
 			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionDelete, "", n.Path, n.PathHash, s.clientType, s.clientName, s.clientVer, n.Size)
 		}
+		s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionPermanentDelete, n, "", "action")
 	}
 
 	go s.CountSizeSum(context.Background(), vaultID, uid)

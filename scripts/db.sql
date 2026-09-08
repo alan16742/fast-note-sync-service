@@ -421,6 +421,34 @@ CREATE INDEX "idx_sync_log_uid_created_at"  ON "sync_log" ("uid", "created_at" D
 CREATE INDEX "idx_sync_log_uid_type_action" ON "sync_log" ("uid", "type", "action");
 
 -- ----------------------------
+-- Table structure for automation_trigger
+-- ----------------------------
+DROP TABLE IF EXISTS "automation_trigger";
+
+CREATE TABLE "automation_trigger" (
+    "id"               integer PRIMARY KEY AUTOINCREMENT,
+    "uid"              integer NOT NULL,
+    "name"             text NOT NULL DEFAULT '',
+    "enabled"          integer NOT NULL DEFAULT 0,
+    "event_type"       text NOT NULL DEFAULT '',
+    "vault_id"         integer NOT NULL DEFAULT 0,
+    "timezone"         text NOT NULL DEFAULT 'Asia/Shanghai',
+    "schedule"         text NOT NULL DEFAULT '',
+    "content_contains"  text NOT NULL DEFAULT '',
+    "path_prefix"      text NOT NULL DEFAULT '',
+    "path_glob"        text NOT NULL DEFAULT '',
+    "event_actions"    text NOT NULL DEFAULT '[]',
+    "actions"          text NOT NULL DEFAULT '[]',
+    "last_run_at"      integer NOT NULL DEFAULT 0,
+    "created_at"       datetime DEFAULT NULL,
+    "updated_at"       datetime DEFAULT NULL
+);
+
+CREATE INDEX "idx_automation_trigger_uid" ON "automation_trigger" ("uid");
+CREATE INDEX "idx_automation_trigger_enabled" ON "automation_trigger" ("enabled");
+CREATE INDEX "idx_automation_trigger_type" ON "automation_trigger" ("event_type");
+
+-- ----------------------------
 -- Table structure for auth_token
 -- ----------------------------
 DROP TABLE IF EXISTS "auth_token";

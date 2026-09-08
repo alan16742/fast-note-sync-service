@@ -66,6 +66,9 @@ func AutoMigrate(db *gorm.DB, key string) error {
 
 	case "WebhookSubscription":
 		return db.AutoMigrate(WebhookSubscription{})
+
+	case "AutomationTrigger":
+		return db.AutoMigrate(AutomationTrigger{})
 	}
 	return nil
 }
