@@ -148,29 +148,34 @@ type NoteService interface {
 // noteService implementation of NoteService interface
 // noteService 实现 NoteService 接口
 type noteService struct {
-	userRepo       domain.UserRepository      // User repository // 用户仓库
-	noteRepo       domain.NoteRepository      // Note repository // 笔记仓库
-	noteLinkRepo   domain.NoteLinkRepository  // Note link repository // 笔记链接仓库
-	fileRepo       domain.FileRepository      // File repository // 文件仓库
-	shareRepo      domain.UserShareRepository // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
+	userRepo       domain.UserRepository        // User repository // 用户仓库
+	noteRepo       domain.NoteRepository        // Note repository // 笔记仓库
+	noteLinkRepo   domain.NoteLinkRepository    // Note link repository // 笔记链接仓库
+	fileRepo       domain.FileRepository        // File repository // 文件仓库
+	shareRepo      domain.UserShareRepository   // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
 	historyRepo    domain.NoteHistoryRepository // Note history repository // 笔记历史仓库（rename 时迁移历史归属）
-	vaultService   VaultService               // Vault service // 仓库服务
-	folderService  FolderService              // Folder service // 文件夹服务
-	syncLogService SyncLogService             // Sync log service // 同步日志服务
-	sf             *singleflight.Group        // Singleflight group // 并发请求合并组
-	kmu            *keyedmutex.KeyedMutex     // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
-	clientType     string                     // Client type // 客户端类型
-	clientName     string                     // Client name // 客户端名称
-	clientVer      string                     // Client version // 客户端版本
-	config         *ServiceConfig             // Service configuration // 服务配置
-	backupService  BackupService              // Backup service // 备份服务
-	gitSyncService GitSyncService             // Git sync service // Git 同步服务
-	countTimers    *sync.Map                  // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
+	vaultService   VaultService                 // Vault service // 仓库服务
+	folderService  FolderService                // Folder service // 文件夹服务
+	syncLogService SyncLogService               // Sync log service // 同步日志服务
+	sf             *singleflight.Group          // Singleflight group // 并发请求合并组
+	kmu            *keyedmutex.KeyedMutex       // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
+	clientType     string                       // Client type // 客户端类型
+	clientName     string                       // Client name // 客户端名称
+	clientVer      string                       // Client version // 客户端版本
+	config         *ServiceConfig               // Service configuration // 服务配置
+	backupService  BackupService                // Backup service // 备份服务
+	gitSyncService GitSyncService               // Git sync service // Git 同步服务
+	eventPublisher NoteEventPublisher           // Webhook event publisher // Webhook 事件发布器
+	countTimers    *sync.Map                    // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
 // NewNoteService creates NoteService instance
 // NewNoteService 创建 NoteService 实例
-func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig) NoteService {
+func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig, publishers ...NoteEventPublisher) NoteService {
+	var eventPublisher NoteEventPublisher
+	if len(publishers) > 0 {
+		eventPublisher = publishers[0]
+	}
 	return &noteService{
 		userRepo:       userRepo,
 		noteRepo:       noteRepo,
@@ -182,6 +187,7 @@ func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteReposito
 		folderService:  folderSvc,
 		backupService:  backupSvc,
 		gitSyncService: gitSyncSvc,
+		eventPublisher: eventPublisher,
 		syncLogService: syncLogSvc,
 		sf:             &singleflight.Group{},
 		kmu:            keyedmutex.New(),
@@ -210,6 +216,7 @@ func (s *noteService) WithClient(clientType, name, version string) NoteService {
 		config:         s.config,
 		backupService:  s.backupService,
 		gitSyncService: s.gitSyncService,
+		eventPublisher: s.eventPublisher,
 		countTimers:    s.countTimers, // Share the same timer map // 共享同一个计时器 map
 	}
 }
@@ -423,6 +430,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 				if s.syncLogService != nil {
 					s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionModify, "mtime", note.Path, note.PathHash, s.clientType, s.clientName, s.clientVer, note.Size)
 				}
+				s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionModify, note, "", "mtime")
 				return &result{isNew: isNew, dto: s.domainToDTO(note)}, nil
 			}
 
@@ -464,6 +472,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			go s.CountSizeSum(context.Background(), vaultID, uid)
 			go s.UpdateNoteLinks(context.Background(), updated.ID, params.Content, vaultID, uid)
 			NoteHistoryDelayPush(updated.ID, uid)
+			s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionModify, updated, "", "content", "mtime")
 
 			if s.backupService != nil {
 				go s.backupService.NotifyUpdated(uid)
@@ -506,6 +515,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		go s.CountSizeSum(context.Background(), vaultID, uid)
 		go s.UpdateNoteLinks(context.Background(), created.ID, params.Content, vaultID, uid)
 		NoteHistoryDelayPush(created.ID, uid)
+		s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionCreate, created, "", "content", "mtime")
 		if s.backupService != nil {
 			go s.backupService.NotifyUpdated(uid)
 		}
@@ -575,6 +585,7 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	// note already reflects the post-write state (UpdateDelete writes the persisted
 	// UpdatedTimestamp back onto it), no re-query needed
 	NoteHistoryDelayPush(note.ID, uid)
+	s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionDelete, note, "", "action")
 	if s.backupService != nil {
 		go s.backupService.NotifyUpdated(uid)
 	}
@@ -638,6 +649,7 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	go s.UpdateNoteLinks(context.Background(), updated.ID, updated.Content, vaultID, uid)
 
 	NoteHistoryDelayPush(updated.ID, uid)
+	s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionRestore, updated, "", "action", "mtime")
 	if s.backupService != nil {
 		go s.backupService.NotifyUpdated(uid)
 	}
@@ -780,6 +792,7 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 		if s.gitSyncService != nil {
 			go s.gitSyncService.NotifyUpdated(uid, vaultID)
 		}
+		s.publishNoteChangeWithVault(ctx, uid, vaultID, params.Vault, domain.WebhookActionRename, newNoteCreated, oldPath, "path")
 
 		return &result{oldNote: s.domainToDTO(oldNote), newNote: s.domainToDTO(newNoteCreated)}, nil
 	})

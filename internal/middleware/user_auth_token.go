@@ -108,7 +108,9 @@ func AuthenticateUserToken(c *gin.Context, secretKey string, tokenService servic
 	var function string
 
 	var resource string
-	if (path == "/api/vault" && isRead) || strings.HasPrefix(path, "/api/note") || strings.HasPrefix(path, "/api/folder") {
+	if strings.HasPrefix(path, "/api/webhooks") || strings.HasPrefix(path, "/api/webhook") {
+		resource = "config"
+	} else if (path == "/api/vault" && isRead) || strings.HasPrefix(path, "/api/note") || strings.HasPrefix(path, "/api/folder") {
 		resource = "note"
 	} else if strings.HasPrefix(path, "/api/file") || strings.HasPrefix(path, "/api/storage") {
 		resource = "file"

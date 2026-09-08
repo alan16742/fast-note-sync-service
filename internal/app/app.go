@@ -89,6 +89,7 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 	// Load support records
 	a.loadSupportRecords(efs)
 
+	a.ReminderService.Start()
 	logger.Info("App container initialized successfully")
 	return a, nil
 }
@@ -96,6 +97,13 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 // Close releases resources held by application container
 // Close 释放应用容器持有的资源
 func (a *App) Close() error {
+	if a.Services != nil && a.ReminderService != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
+		defer cancel()
+		if err := a.ReminderService.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
 	if a.Dao != nil && a.Dao.BleveMgr != nil {
 		if err := a.Dao.BleveMgr.CloseAll(); err != nil {
 			a.logger.Error("failed to close all Bleve indexes", zap.Error(err))
@@ -648,8 +656,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-
-
 	// 0.2 Shutdown CloudflareService
 	if a.CloudflareService != nil {
 		a.logger.Info("Shutting down cloudflare service...")
@@ -688,6 +694,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 			a.logger.Warn("Sync log service shutdown error", zap.Error(err))
 		} else {
 			a.logger.Info("Sync log service shutdown completed")
+		}
+	}
+
+	if a.Services != nil && a.ReminderService != nil {
+		if err := a.ReminderService.Shutdown(ctx); err != nil {
+			a.logger.Warn("shutdown task reminders failed", zap.Error(err))
 		}
 	}
 
