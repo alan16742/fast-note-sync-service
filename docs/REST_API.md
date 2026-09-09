@@ -122,18 +122,6 @@ Schema: `app.Res`
 
 ---
 
-### Trigger a backup manually
-**Endpoint**: `POST /api/backup/execute`
-
-**Parameters**:
-| Name | In | Type | Required | Description |
-|------|----|------|----------|-------------|
-| token | header | string | ✓ | Auth Token |
-| params | body | dto.BackupExecuteRequest | ✓ | Backup Execute Parameters |
-
-**Success Response (200)**:
-Schema: `app.Res`
-
 ---
 
 ### Get backup history list
@@ -533,18 +521,6 @@ Schema: `app.Res`
 Schema: `app.Res`
 
 ---
-
-### Trigger a manual git sync
-**Endpoint**: `POST /api/git-sync/config/execute`
-
-**Parameters**:
-| Name | In | Type | Required | Description |
-|------|----|------|----------|-------------|
-| token | header | string | ✓ | Auth Token |
-| params | body | dto.GitSyncExecuteRequest | ✓ | Execute Parameters |
-
-**Success Response (200)**:
-Schema: `app.Res`
 
 ---
 

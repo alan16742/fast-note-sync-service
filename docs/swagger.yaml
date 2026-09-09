@@ -518,9 +518,6 @@ definitions:
       includeVaultName:
         description: Whether sync path includes vault name // 同步路径是否包含仓库名
         type: boolean
-      isEnabled:
-        description: Is enabled // 是否启用
-        type: boolean
       lastMessage:
         description: Last run result message // 上次运行结果消息
         type: string
@@ -554,9 +551,6 @@ definitions:
       updatedAt:
         description: Updated at // 更新时间
         type: string
-      vault:
-        description: Associated vault name // 关联库名称
-        type: string
     type: object
   dto.BackupConfigRequest:
     properties:
@@ -567,10 +561,6 @@ definitions:
       includeVaultName:
         description: Include vault name // 同步路径是否包含仓库名
         example: false
-        type: boolean
-      isEnabled:
-        description: Is enabled // 是否启用
-        example: true
         type: boolean
       passwordMode:
         description: Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码,
@@ -591,27 +581,15 @@ definitions:
         example: '[1, 2]'
         type: string
       type:
-        description: Backup type // 备份类型
+        description: Backup mode // 备份模式
         enum:
         - full
         - incremental
         - sync
         example: sync
         type: string
-      vault:
-        description: Vault name // 仓库名称
-        example: test
-        type: string
     required:
     - storageIds
-    - type
-    type: object
-  dto.BackupExecuteRequest:
-    properties:
-      id:
-        description: ID // ID
-        example: 1
-        type: integer
     type: object
   dto.BackupHistoryDTO:
     properties:
@@ -652,6 +630,9 @@ definitions:
       storageId:
         description: Storage ID // 存储ID
         type: integer
+      triggerId:
+        description: Trigger ID // 触发器ID
+        type: integer
       type:
         description: Backup type // 备份类型
         type: string
@@ -661,6 +642,9 @@ definitions:
       updatedAt:
         description: Updated at // 更新时间
         type: string
+      vaultId:
+        description: Vault ID // 笔记库ID
+        type: integer
     type: object
   dto.FileDTO:
     properties:
@@ -890,9 +874,6 @@ definitions:
       includeConfig:
         description: Include config sync // 是否开启配置同步
         type: boolean
-      isEnabled:
-        description: Is enabled // 是否启用
-        type: boolean
       lastMessage:
         description: Last run result message // 上次运行结果消息
         type: string
@@ -921,9 +902,6 @@ definitions:
       username:
         description: Username // 用户名
         type: string
-      vault:
-        description: Associated vault name // 关联库名称
-        type: string
     type: object
   dto.GitSyncConfigRequest:
     properties:
@@ -937,8 +915,6 @@ definitions:
         type: integer
       includeConfig:
         type: boolean
-      isEnabled:
-        type: boolean
       password:
         type: string
       repoUrl:
@@ -947,20 +923,10 @@ definitions:
         type: integer
       username:
         type: string
-      vault:
-        description: Associated vault name // 关联笔记本名称
-        type: string
     required:
     - repoUrl
     type: object
   dto.GitSyncDeleteRequest:
-    properties:
-      id:
-        type: integer
-    required:
-    - id
-    type: object
-  dto.GitSyncExecuteRequest:
     properties:
       id:
         type: integer
@@ -983,6 +949,10 @@ definitions:
         type: string
       status:
         description: 0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown
+        type: integer
+      triggerId:
+        type: integer
+      vaultId:
         type: integer
     type: object
   dto.GitSyncValidateRequest:
@@ -1169,6 +1139,10 @@ definitions:
         description: Creation timestamp // 创建时间戳
         example: 1700000000
         type: integer
+      isConflictResolved:
+        description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        type: boolean
       mtime:
         description: Modification timestamp // 修改时间戳
         example: 1700000000
@@ -2761,39 +2735,6 @@ paths:
       summary: Get backup configurations
       tags:
       - Backup
-  /api/backup/execute:
-    post:
-      parameters:
-      - description: Backup Execute Parameters
-        in: body
-        name: params
-        required: true
-        schema:
-          $ref: '#/definitions/dto.BackupExecuteRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/app.Res'
-        "400":
-          description: Invalid Params
-          schema:
-            $ref: '#/definitions/app.Res'
-        "401":
-          description: Token Required
-          schema:
-            $ref: '#/definitions/app.Res'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/app.Res'
-      security:
-      - UserAuthToken: []
-      summary: Trigger a backup manually
-      tags:
-      - Backup
   /api/backup/historys:
     get:
       parameters:
@@ -3565,41 +3506,6 @@ paths:
       security:
       - UserAuthToken: []
       summary: Clean local git workspace
-      tags:
-      - GitSync
-  /api/git-sync/config/execute:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Execute Parameters
-        in: body
-        name: params
-        required: true
-        schema:
-          $ref: '#/definitions/dto.GitSyncExecuteRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: Success
-          schema:
-            $ref: '#/definitions/app.Res'
-        "400":
-          description: Invalid Params
-          schema:
-            $ref: '#/definitions/app.Res'
-        "401":
-          description: Token Required
-          schema:
-            $ref: '#/definitions/app.Res'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/app.Res'
-      security:
-      - UserAuthToken: []
-      summary: Trigger a manual git sync
       tags:
       - GitSync
   /api/git-sync/configs:

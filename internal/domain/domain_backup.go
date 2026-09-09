@@ -21,7 +21,6 @@ type BackupConfig struct {
 	VaultID          int64     // 关联库 ID (0 表示所有库)
 	Type             string    // full, incremental, sync
 	StorageIds       string    // JSON 数组，如 "[1, 2]"
-	IsEnabled        bool      // 是否启用
 	IncludeVaultName bool      // 同步路径是否包含仓库名前缀
 	RetentionDays    int       // 保留天数
 	LastRunTime      time.Time // 上次运行时间
@@ -38,6 +37,8 @@ type BackupHistory struct {
 	ID        int64
 	UID       int64
 	ConfigID  int64
+	TriggerID int64
+	VaultID   int64
 	StorageID int64
 	Type      string // full, incremental, sync
 	StartTime time.Time
@@ -72,7 +73,4 @@ type BackupRepository interface {
 	// DeleteOldHistory Delete old history records created before cutoffTime
 	// 删除早于 cutoffTime 的历史记录
 	DeleteOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) error
-
-	// DisableByVaultID 禁用仓库下的备份任务
-	DisableByVaultID(ctx context.Context, vaultID, uid int64) error
 }

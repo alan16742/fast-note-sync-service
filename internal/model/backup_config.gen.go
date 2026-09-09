@@ -19,7 +19,6 @@ type BackupConfig struct {
 	VaultID          int64  `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
 	Type             string `gorm:"column:type;default:''" json:"type" form:"type"`
 	StorageIds       string `gorm:"column:storage_ids;type:TEXT;default:''" json:"storageIds" form:"storageIds"`
-	IsEnabled        int64  `gorm:"column:is_enabled;default:0" json:"isEnabled" form:"isEnabled"`
 	IncludeVaultName int64  `gorm:"column:include_vault_name;default:0" json:"includeVaultName" form:"includeVaultName"`
 	// RetentionDays default must stay in sync with the gorm-gen source / scripts/db.sql, which specify 10.
 	// RetentionDays 的默认值需与 gorm-gen 源定义及 scripts/db.sql 保持一致，两者均为 10。

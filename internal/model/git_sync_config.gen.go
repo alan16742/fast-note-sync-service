@@ -21,7 +21,6 @@ type GitSyncConfig struct {
 	Username        string     `gorm:"column:username;type:TEXT;default:''" json:"username" form:"username"`
 	Password        string     `gorm:"column:password;type:TEXT;default:''" json:"password" form:"password"`
 	Branch          string     `gorm:"column:branch;type:TEXT;default:''" json:"branch" form:"branch"`
-	IsEnabled       int64      `gorm:"column:is_enabled;default:0" json:"isEnabled" form:"isEnabled"`
 	RetentionDays   int64      `gorm:"column:retention_days;default:0" json:"retentionDays" form:"retentionDays"`
 	LastSyncTime    time.Time  `gorm:"column:last_sync_time" json:"lastSyncTime" form:"lastSyncTime"`
 	LastStatus      int64      `gorm:"column:last_status;default:0" json:"lastStatus" form:"lastStatus"`

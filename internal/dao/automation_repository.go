@@ -50,9 +50,9 @@ func automationToDomain(item *model.AutomationTrigger) (*domain.AutomationTrigge
 	if item == nil {
 		return nil, nil
 	}
-	var eventActions []string
-	if item.EventActions != "" {
-		if err := json.Unmarshal([]byte(item.EventActions), &eventActions); err != nil {
+	var events []domain.AutomationEventRule
+	if item.Events != "" {
+		if err := json.Unmarshal([]byte(item.Events), &events); err != nil {
 			return nil, err
 		}
 	}
@@ -66,11 +66,13 @@ func automationToDomain(item *model.AutomationTrigger) (*domain.AutomationTrigge
 	if item.LastRunAt > 0 {
 		lastRunAt = time.Unix(item.LastRunAt, 0)
 	}
+	matchMode := domain.AutomationMatchMode(item.MatchMode)
+	if matchMode == "" {
+		matchMode = domain.AutomationMatchAny
+	}
 	return &domain.AutomationTrigger{
 		ID: item.ID, UID: item.UID, Name: item.Name, Enabled: item.Enabled == 1,
-		EventType: domain.AutomationEventType(item.EventType), VaultID: item.VaultID,
-		Timezone: item.Timezone, Schedule: item.Schedule, ContentContains: item.ContentContains,
-		PathPrefix: item.PathPrefix, PathGlob: item.PathGlob, EventActions: eventActions,
+		VaultID: item.VaultID, Timezone: item.Timezone, MatchMode: matchMode, Events: events,
 		Actions: actions, LastRunAt: lastRunAt,
 		CreatedAt: time.Time(item.CreatedAt), UpdatedAt: time.Time(item.UpdatedAt),
 	}, nil
@@ -80,7 +82,7 @@ func automationToModel(item *domain.AutomationTrigger) (*model.AutomationTrigger
 	if item == nil {
 		return nil, nil
 	}
-	eventActions, err := json.Marshal(item.EventActions)
+	events, err := json.Marshal(item.Events)
 	if err != nil {
 		return nil, err
 	}
@@ -96,11 +98,13 @@ func automationToModel(item *domain.AutomationTrigger) (*model.AutomationTrigger
 	if !item.LastRunAt.IsZero() {
 		lastRunAt = item.LastRunAt.Unix()
 	}
+	matchMode := item.MatchMode
+	if matchMode == "" {
+		matchMode = domain.AutomationMatchAny
+	}
 	return &model.AutomationTrigger{
 		ID: item.ID, UID: item.UID, Name: item.Name, Enabled: enabled,
-		EventType: string(item.EventType), VaultID: item.VaultID, Timezone: item.Timezone,
-		Schedule: item.Schedule, ContentContains: item.ContentContains, PathPrefix: item.PathPrefix,
-		PathGlob: item.PathGlob, EventActions: string(eventActions), Actions: string(actions),
+		VaultID: item.VaultID, Timezone: item.Timezone, MatchMode: string(matchMode), Events: string(events), Actions: string(actions),
 		LastRunAt: lastRunAt, CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
 	}, nil
 }
@@ -135,10 +139,14 @@ func (r *automationRepository) ListEnabled(ctx context.Context, uid int64, event
 		return nil, err
 	}
 	var items []*model.AutomationTrigger
-	if err := db.Where("uid = ? AND enabled = ? AND event_type = ?", uid, 1, string(eventType)).Order("id asc").Find(&items).Error; err != nil {
+	if err := db.Where("uid = ? AND enabled = ?", uid, 1).Order("id asc").Find(&items).Error; err != nil {
 		return nil, err
 	}
-	return automationDomains(items)
+	values, err := automationDomains(items)
+	if err != nil {
+		return nil, err
+	}
+	return filterAutomationEvents(values, eventType)
 }
 
 func (r *automationRepository) ListEnabledByType(ctx context.Context, eventType domain.AutomationEventType) ([]*domain.AutomationTrigger, error) {
@@ -153,14 +161,31 @@ func (r *automationRepository) ListEnabledByType(ctx context.Context, eventType 
 			continue
 		}
 		var items []*model.AutomationTrigger
-		if err := db.Where("uid = ? AND enabled = ? AND event_type = ?", uid, 1, string(eventType)).Order("id asc").Find(&items).Error; err != nil {
+		if err := db.Where("uid = ? AND enabled = ?", uid, 1).Order("id asc").Find(&items).Error; err != nil {
 			continue
 		}
-		values, err := automationDomains(items)
+		decoded, err := automationDomains(items)
+		if err != nil {
+			return nil, err
+		}
+		values, err := filterAutomationEvents(decoded, eventType)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, values...)
+	}
+	return result, nil
+}
+
+func filterAutomationEvents(triggers []*domain.AutomationTrigger, eventType domain.AutomationEventType) ([]*domain.AutomationTrigger, error) {
+	result := make([]*domain.AutomationTrigger, 0, len(triggers))
+	for _, trigger := range triggers {
+		for _, event := range trigger.Events {
+			if event.Type == eventType {
+				result = append(result, trigger)
+				break
+			}
+		}
 	}
 	return result, nil
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,6 +44,24 @@ func renderNotificationTemplate(template string, values map[string]string) strin
 		}
 		return match
 	})
+}
+
+func renderNotificationEndpoint(endpoint string, values map[string]string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" {
+		return renderNotificationTemplate(endpoint, values)
+	}
+	parsed.Path = renderNotificationTemplate(parsed.Path, values)
+	parsed.Fragment = renderNotificationTemplate(parsed.Fragment, values)
+	query := parsed.Query()
+	for key, entries := range query {
+		for index, entry := range entries {
+			entries[index] = renderNotificationTemplate(entry, values)
+		}
+		query[key] = entries
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func notificationTemplates(subscription *domain.WebhookSubscription, reminder bool) (string, string) {
@@ -99,8 +118,9 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 		"url":            "",
 	}
 	return notification.Message{
-		Title: renderNotificationTemplate(titleTemplate, values),
-		Body:  limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Title:    renderNotificationTemplate(titleTemplate, values),
+		Body:     limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Endpoint: renderNotificationEndpoint(subscriptionURL(subscription), values),
 	}
 }
 
@@ -123,13 +143,21 @@ func messageForReminder(subscription *domain.WebhookSubscription, title, due, ti
 		"url":            link,
 	}
 	return notification.Message{
-		Title: renderNotificationTemplate(titleTemplate, values),
-		Body:  limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
-		Short: "到期：" + due,
-		Tags:  "待办",
-		Group: vault,
-		URL:   link,
+		Title:    renderNotificationTemplate(titleTemplate, values),
+		Body:     limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Short:    "到期：" + due,
+		Tags:     "待办",
+		Group:    vault,
+		URL:      link,
+		Endpoint: renderNotificationEndpoint(subscriptionURL(subscription), values),
 	}
+}
+
+func subscriptionURL(subscription *domain.WebhookSubscription) string {
+	if subscription == nil {
+		return ""
+	}
+	return subscription.URL
 }
 
 func messageForTest(subscription *domain.WebhookSubscription) notification.Message {
@@ -145,8 +173,12 @@ func messageForTest(subscription *domain.WebhookSubscription) notification.Messa
 }
 
 func sendNotification(ctx context.Context, sender notification.Sender, subscription *domain.WebhookSubscription, message notification.Message) error {
-	if configured, ok := sender.(notification.ConfiguredSender); ok {
-		return configured.SendWithOptions(ctx, subscription.URL, subscription.Method, subscription.Headers, message)
+	endpoint := subscriptionURL(subscription)
+	if message.Endpoint != "" {
+		endpoint = message.Endpoint
 	}
-	return sender.Send(ctx, subscription.URL, subscription.Secret, message)
+	if configured, ok := sender.(notification.ConfiguredSender); ok {
+		return configured.SendWithOptions(ctx, endpoint, subscription.Method, subscription.Headers, message)
+	}
+	return sender.Send(ctx, endpoint, subscription.Secret, message)
 }

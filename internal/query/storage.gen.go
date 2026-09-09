@@ -132,7 +132,7 @@ func (s *storage) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (s *storage) fillFieldMap() {
-	s.fieldMap = make(map[string]field.Expr, 18)
+	s.fieldMap = make(map[string]field.Expr, 23)
 	s.fieldMap["id"] = s.ID
 	s.fieldMap["uid"] = s.UID
 	s.fieldMap["type"] = s.Type

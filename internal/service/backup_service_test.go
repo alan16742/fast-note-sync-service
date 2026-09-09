@@ -58,7 +58,7 @@ func newBackupSvc(
 		vaultRepo:      vaultRepo,
 		storageService: storageSvc,
 		logger:         zap.NewNop(),
-		runningTasks:   make(map[int64]context.CancelFunc),
+		runningTasks:   make(map[string]context.CancelFunc),
 	}
 }
 
@@ -72,8 +72,8 @@ func TestBackupService_GetConfigs_Success(t *testing.T) {
 	storageSvc := &backupStorageStub{}
 
 	configs := []*domain.BackupConfig{
-		{ID: 1, UID: 1, Type: "full", IsEnabled: true},
-		{ID: 2, UID: 1, Type: "incremental", IsEnabled: false},
+		{ID: 1, UID: 1, Type: "full"},
+		{ID: 2, UID: 1, Type: "incremental"},
 	}
 	backupRepo.On("ListConfigs", mock.Anything, int64(1)).Return(configs, nil)
 
@@ -125,7 +125,6 @@ func TestBackupService_GetConfigs_ReconcilesStaleSuccess(t *testing.T) {
 			ID:          1,
 			UID:         1,
 			Type:        "full",
-			IsEnabled:   true,
 			LastRunTime: runTime,
 			LastStatus:  domain.BackupStatusSuccess, // stale value written by old version
 			LastMessage: "Backup completed successfully",
@@ -177,7 +176,6 @@ func TestBackupService_GetConfigs_KeepsEarlyFailure(t *testing.T) {
 			ID:          1,
 			UID:         1,
 			Type:        "full",
-			IsEnabled:   true,
 			LastRunTime: currentRunTime,
 			LastStatus:  domain.BackupStatusFailed,
 			LastMessage: "Backup failed: zip failed",
@@ -223,7 +221,6 @@ func TestBackupService_GetConfigs_NoRewriteWhenConsistent(t *testing.T) {
 			ID:          1,
 			UID:         1,
 			Type:        "full",
-			IsEnabled:   true,
 			LastRunTime: runTime,
 			LastStatus:  domain.BackupStatusFailed,
 			LastMessage: "Backup failed: archive errors",
@@ -264,33 +261,30 @@ func TestBackupService_UpdateConfig_Success(t *testing.T) {
 		200: {ID: 200, IsEnabled: true},
 	}}
 
-	vault := &domain.Vault{ID: 100, Name: "myvault"}
-	vaultRepo.On("GetByName", mock.Anything, "myvault", int64(1)).Return(vault, nil)
-
 	// storageSvc.Get is handled by backupStorageStub directly.
 	// StorageService.Get 由 backupStorageStub 直接处理，无需 mock.On 配置。
 
-	savedConfig := &domain.BackupConfig{ID: 1, VaultID: 100, Type: "full", IsEnabled: true}
+	savedConfig := &domain.BackupConfig{ID: 1, Type: "full"}
 	backupRepo.On("SaveConfig", mock.Anything, mock.MatchedBy(func(c *domain.BackupConfig) bool {
-		return c.VaultID == 100 && c.Type == "full"
+		return c.Type == "full" && c.IncludeVaultName && c.PasswordMode == 1 &&
+			c.PasswordValue == "secret" && c.RetentionDays == 14
 	}), int64(1)).Return(savedConfig, nil)
 
 	// GetByID is called after save from configToDTO; the uid passed is config.UID (0 in this test fixture).
 	// configToDTO 调用 GetByID 时传入的 uid 是 config.UID（本测试 fixture 为 0）。
-	vaultRepo.On("GetByID", mock.Anything, int64(100), int64(0)).Return(vault, nil)
-
 	svc := newBackupSvc(backupRepo, vaultRepo, storageSvc)
 	req := &dto.BackupConfigRequest{
-		Vault:      "myvault",
-		StorageIds: "[200]",
-		Type:       "full",
-		IsEnabled:  true,
+		StorageIds:       "[200]",
+		Type:             "full",
+		IncludeVaultName: true,
+		PasswordMode:     1,
+		PasswordValue:    "secret",
+		RetentionDays:    14,
 	}
 	result, err := svc.UpdateConfig(context.Background(), 1, req)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
-	assert.Equal(t, "myvault", result.Vault)
 	backupRepo.AssertExpectations(t)
 	vaultRepo.AssertExpectations(t)
 }

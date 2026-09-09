@@ -58,7 +58,6 @@ type ContentChangeEvent struct {
 type WebhookSubscription struct {
 	ID            int64
 	UID           int64
-	Enabled       bool
 	Provider      string
 	URL           string
 	Method        string

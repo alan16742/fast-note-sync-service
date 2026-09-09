@@ -22,7 +22,6 @@ type GitSyncConfig struct {
 	Username        string     `json:"username"`
 	Password        string     `json:"password"`
 	Branch          string     `json:"branch"`
-	IsEnabled       bool       `json:"isEnabled"`
 	RetentionDays   int64      `json:"retentionDays"`
 	LastSyncTime    *time.Time `json:"lastSyncTime"`
 	LastStatus      int64      `json:"lastStatus"` // 0: 闲置, 1: 运行中, 2: 成功, 3: 失败, 4: 系统关闭
@@ -38,6 +37,8 @@ type GitSyncHistory struct {
 	ID        int64     `json:"id"`
 	UID       int64     `json:"uid"`
 	ConfigID  int64     `json:"configId"`
+	TriggerID int64     `json:"triggerId"`
+	VaultID   int64     `json:"vaultId"`
 	StartTime time.Time `json:"startTime"`
 	EndTime   time.Time `json:"endTime"`
 	Status    int64     `json:"status"` // 0: 闲置, 1: 运行中, 2: 成功, 3: 失败, 4: 系统关闭
@@ -68,7 +69,4 @@ type GitSyncRepository interface {
 	DeleteHistory(ctx context.Context, uid int64, configID int64) error
 	// DeleteOldHistory 删除指定时间之前的同步历史记录
 	DeleteOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) error
-
-	// DisableByVaultID 禁用仓库下的 Git 同步任务
-	DisableByVaultID(ctx context.Context, vaultID, uid int64) error
 }

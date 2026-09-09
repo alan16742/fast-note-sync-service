@@ -5,15 +5,13 @@ import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 // BackupConfigRequest backup configuration request
 // BackupConfigRequest 备份配置请求
 type BackupConfigRequest struct {
-	ID               int64  `json:"id" form:"id" example:"1"`                                                       // ID // ID
-	Vault            string `json:"vault" form:"vault" example:"test"`                                              // Vault name // 仓库名称
-	Type             string `json:"type" form:"type" binding:"required,oneof=full incremental sync" example:"sync"` // Backup type // 备份类型
-	StorageIds       string `json:"storageIds" form:"storageIds" binding:"required" example:"[1, 2]"`               // Storage IDs // 存储 ID 列表
-	IsEnabled        bool   `json:"isEnabled" form:"isEnabled" example:"true"`                                      // Is enabled // 是否启用
-	RetentionDays    int    `json:"retentionDays" form:"retentionDays" binding:"min=-1" example:"7"`                // Retention days // 保留天数
-	IncludeVaultName bool   `json:"includeVaultName" form:"includeVaultName" example:"false"`                       // Include vault name // 同步路径是否包含仓库名
-	PasswordMode     int    `json:"passwordMode" form:"passwordMode" example:"0"`                                   // Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码, 2:随机密码)
-	PasswordValue    string `json:"passwordValue" form:"passwordValue" example:"123456"`                            // Password value for fixed mode // 固定密码值
+	ID               int64  `json:"id" form:"id" example:"1"`                                                        // ID // ID
+	Type             string `json:"type" form:"type" binding:"omitempty,oneof=full incremental sync" example:"sync"` // Backup mode // 备份模式
+	StorageIds       string `json:"storageIds" form:"storageIds" binding:"required" example:"[1, 2]"`                // Storage IDs // 存储 ID 列表
+	RetentionDays    int    `json:"retentionDays" form:"retentionDays" binding:"min=-1" example:"7"`                 // Retention days // 保留天数
+	IncludeVaultName bool   `json:"includeVaultName" form:"includeVaultName" example:"false"`                        // Include vault name // 同步路径是否包含仓库名
+	PasswordMode     int    `json:"passwordMode" form:"passwordMode" example:"0"`                                    // Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码, 2:随机密码)
+	PasswordValue    string `json:"passwordValue" form:"passwordValue" example:"123456"`                             // Password value for fixed mode // 固定密码值
 }
 
 // BackupExecuteRequest backup execution request
@@ -35,10 +33,8 @@ type BackupHistoryListRequest struct {
 type BackupConfigDTO struct {
 	ID               int64      `json:"id"`               // Config ID // 配置ID
 	UID              int64      `json:"uid"`              // User UID // 用户ID
-	Vault            string     `json:"vault"`            // Associated vault name // 关联库名称
 	Type             string     `json:"type"`             // Backup type (full, incremental, sync) // 备份类型 (full, incremental, sync)
 	StorageIds       string     `json:"storageIds"`       // Storage ID list // 存储ID列表
-	IsEnabled        bool       `json:"isEnabled"`        // Is enabled // 是否启用
 	RetentionDays    int        `json:"retentionDays"`    // Retention days // 保留天数
 	IncludeVaultName bool       `json:"includeVaultName"` // Whether sync path includes vault name // 同步路径是否包含仓库名
 	PasswordMode     int        `json:"passwordMode"`     // Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码, 2:随机密码)
@@ -56,6 +52,8 @@ type BackupHistoryDTO struct {
 	ID        int64      `json:"id"`        // History record ID // 历史记录ID
 	UID       int64      `json:"uid"`       // User UID // 用户ID
 	ConfigID  int64      `json:"configId"`  // Config ID // 配置ID
+	TriggerID int64      `json:"triggerId"` // Trigger ID // 触发器ID
+	VaultID   int64      `json:"vaultId"`   // Vault ID // 笔记库ID
 	StorageID int64      `json:"storageId"` // Storage ID // 存储ID
 	Type      string     `json:"type"`      // Backup type // 备份类型
 	StartTime timex.Time `json:"startTime"` // Start time // 开始时间

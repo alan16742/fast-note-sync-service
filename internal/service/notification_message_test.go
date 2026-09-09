@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -27,6 +28,19 @@ func TestMessageForNoteEventRendersCustomTemplates(t *testing.T) {
 	})
 	assert.Equal(t, "rename: new.md", message.Title)
 	assert.Equal(t, "vault|old.md|content|", message.Body)
+}
+
+func TestMessageForNoteEventRendersEndpointTemplate(t *testing.T) {
+	message := messageForNoteEvent(&domain.ContentChangeEvent{Content: "a & b", Path: "note.md"}, &domain.WebhookSubscription{
+		URL: "https://example.com/hook?title={{content}}&path={{path}}",
+	})
+	parsed, err := url.Parse(message.Endpoint)
+	if err != nil {
+		t.Fatalf("invalid endpoint: %v", err)
+	}
+	if parsed.Query().Get("title") != "a & b" || parsed.Query().Get("path") != "note.md" {
+		t.Fatalf("unexpected endpoint query: %s", parsed.RawQuery)
+	}
 }
 
 func TestMessageForReminderRendersCustomTemplates(t *testing.T) {

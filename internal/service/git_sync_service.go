@@ -29,7 +29,6 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 // errNoChanges indicates that no changes were found after the Git sync check
@@ -46,7 +45,7 @@ type GitSyncService interface {
 	UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error)
 	DeleteConfig(ctx context.Context, uid int64, id int64) error
 	Validate(ctx context.Context, params *dto.GitSyncValidateRequest) error
-	ExecuteSync(ctx context.Context, uid int64, id int64) error
+	ExecuteSync(ctx context.Context, uid int64, id int64, execution *domain.AutomationExecutionContext) error
 	CleanWorkspace(ctx context.Context, uid int64, configID int64) error
 	ListHistory(ctx context.Context, uid int64, configID int64, pager *pkgapp.Pager) ([]*dto.GitSyncHistoryDTO, int64, error)
 	Shutdown(ctx context.Context) error
@@ -62,7 +61,7 @@ type gitSyncService struct {
 	gitConf     *appconfig.GitConfig
 	logger      *zap.Logger
 	mu          sync.Mutex
-	running     map[int64]context.CancelFunc // configID -> cancelFunc
+	running     map[string]context.CancelFunc // target/trigger/vault execution context -> cancelFunc
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
@@ -83,7 +82,7 @@ func NewGitSyncService(repo domain.GitSyncRepository, noteRepo domain.NoteReposi
 		settingRepo: settingRepo,
 		gitConf:     gitConf,
 		logger:      logger,
-		running:     make(map[int64]context.CancelFunc),
+		running:     make(map[string]context.CancelFunc),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -100,7 +99,6 @@ func (s *gitSyncService) domainToDTO(conf *domain.GitSyncConfig) *dto.GitSyncCon
 		Username:        conf.Username,
 		Password:        "", // Do not expose Git password to frontend / 不回显 Git 密码给前端
 		Branch:          conf.Branch,
-		IsEnabled:       conf.IsEnabled,
 		RetentionDays:   conf.RetentionDays,
 		LastStatus:      conf.LastStatus,
 		LastMessage:     conf.LastMessage,
@@ -111,14 +109,6 @@ func (s *gitSyncService) domainToDTO(conf *domain.GitSyncConfig) *dto.GitSyncCon
 	}
 	if conf.LastSyncTime != nil {
 		res.LastSyncTime = timex.Time(*conf.LastSyncTime)
-	}
-
-	// Fetch vault name if possible
-	if conf.VaultID > 0 {
-		v, err := s.vaultRepo.GetByID(context.Background(), conf.VaultID, conf.UID)
-		if err == nil {
-			res.Vault = v.Name
-		}
 	}
 
 	return res
@@ -171,17 +161,6 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 		}
 	}
 
-	if params.Vault != "" {
-		v, err := s.vaultRepo.GetByName(ctx, params.Vault, uid)
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, code.ErrorVaultNotFound
-			}
-			return nil, code.ErrorDBQuery.WithDetails(err.Error())
-		}
-		conf.VaultID = v.ID
-	}
-
 	conf.RepoURL = params.RepoURL
 	conf.Username = params.Username
 	conf.Password = params.Password
@@ -189,7 +168,6 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	if conf.Branch == "" {
 		conf.Branch = "main"
 	}
-	conf.IsEnabled = params.IsEnabled
 	conf.RetentionDays = params.RetentionDays
 	conf.IncludeConfig = params.IncludeConfig
 	conf.ConfigSyncRules = params.ConfigSyncRules
@@ -370,7 +348,10 @@ func isPrivateOrLocalIP(ip net.IP) bool {
 	return false
 }
 
-func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) error {
+func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, execution *domain.AutomationExecutionContext) error {
+	if execution == nil || execution.TriggerID <= 0 || execution.VaultID <= 0 {
+		return errors.New("automation execution context with trigger and vault is required")
+	}
 	conf, err := s.repo.GetByID(ctx, id, uid)
 	if err != nil {
 		return code.ErrorDBQuery.WithDetails(err.Error())
@@ -378,23 +359,20 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 	if conf == nil {
 		return code.ErrorGitSyncNotFound
 	}
-	if !conf.IsEnabled {
-		return errors.New("git sync configuration is disabled")
-	}
-
 	// Strategy: For sync/mirror sync, directly cancel the old task and start a new one
 	// 策略：同步/镜像同步直接取消旧任务，启动新任务
+	key := fmt.Sprintf("%d:%d:%d", id, execution.TriggerID, execution.VaultID)
 	s.mu.Lock()
-	if oldCancel, running := s.running[id]; running {
+	if oldCancel, running := s.running[key]; running {
 		s.logger.Info("Cancelling existing Git sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configId", id))
 		oldCancel()
-		delete(s.running, id)
+		delete(s.running, key)
 	}
 
 	// Create context for new task
 	// 为新任务创建 context
 	taskCtx, taskCancel := context.WithCancel(s.ctx)
-	s.running[id] = taskCancel
+	s.running[key] = taskCancel
 	s.mu.Unlock()
 
 	s.wg.Add(1)
@@ -404,9 +382,9 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 			s.mu.Lock()
 			// Ensure only the current cancel function is cleaned up
 			// 确保只清理当前的 cancel 函数
-			if _, ok := s.running[id]; ok {
+			if _, ok := s.running[key]; ok {
 				// 虽然 sync 策略下会先 cancel 再 set，但为了闭包内引用的严谨
-				delete(s.running, id)
+				delete(s.running, key)
 			}
 			s.mu.Unlock()
 			taskCancel()
@@ -415,10 +393,32 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 
 		// Use the newly created task context
 		// 使用新创建的任务 context
-		s.syncTask(taskCtx, conf)
+		runConfig := *conf
+		runConfig.VaultID = execution.VaultID
+		if latest := s.previousSyncRun(ctx, conf.ID, execution); !latest.IsZero() {
+			runConfig.LastSyncTime = &latest
+		}
+		s.syncTask(taskCtx, &runConfig, execution)
 	})
 
 	return nil
+}
+
+func (s *gitSyncService) previousSyncRun(ctx context.Context, configID int64, execution *domain.AutomationExecutionContext) time.Time {
+	if execution == nil {
+		return time.Time{}
+	}
+	histories, _, err := s.repo.ListHistory(ctx, execution.UID, configID, 1, 1000)
+	if err != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, history := range histories {
+		if history.TriggerID == execution.TriggerID && history.VaultID == execution.VaultID && history.Status == domain.GitSyncStatusSuccess && history.StartTime.After(latest) {
+			latest = history.StartTime
+		}
+	}
+	return latest
 }
 
 func (s *gitSyncService) CleanWorkspace(ctx context.Context, uid int64, configID int64) error {
@@ -445,7 +445,7 @@ func (s *gitSyncService) CleanWorkspace(ctx context.Context, uid int64, configID
 		_ = s.repo.DeleteHistory(ctx, uid, configID)
 
 		// 3. Remove physical workspace // 3. 删除物理工作区
-		path := s.getWorkspacePath(uid, configID)
+		path := s.getWorkspacePath(uid, configID, nil)
 		err = os.RemoveAll(path)
 		if err != nil {
 			s.logger.Warn("Failed to cleanup physical workspace", zap.String("path", path), zap.Error(err))
@@ -527,6 +527,8 @@ func (s *gitSyncService) historyToDTO(h *domain.GitSyncHistory) *dto.GitSyncHist
 	return &dto.GitSyncHistoryDTO{
 		ID:        h.ID,
 		ConfigID:  h.ConfigID,
+		TriggerID: h.TriggerID,
+		VaultID:   h.VaultID,
 		StartTime: timex.Time(h.StartTime),
 		EndTime:   timex.Time(h.EndTime),
 		Status:    h.Status,
@@ -535,15 +537,18 @@ func (s *gitSyncService) historyToDTO(h *domain.GitSyncHistory) *dto.GitSyncHist
 	}
 }
 
-func (s *gitSyncService) getWorkspacePath(uid, configID int64) string {
-	return filepath.Join(s.getUserWorkspacePath(uid), fmt.Sprintf("%d", configID))
+func (s *gitSyncService) getWorkspacePath(uid, configID int64, execution *domain.AutomationExecutionContext) string {
+	if execution == nil {
+		return filepath.Join(s.getUserWorkspacePath(uid), fmt.Sprintf("%d", configID))
+	}
+	return filepath.Join(s.getUserWorkspacePath(uid), fmt.Sprintf("%d", configID), fmt.Sprintf("trigger-%d-vault-%d", execution.TriggerID, execution.VaultID))
 }
 
 func (s *gitSyncService) getUserWorkspacePath(uid int64) string {
 	return filepath.Join("storage", "git_workspace", fmt.Sprintf("%d", uid))
 }
 
-func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfig) {
+func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfig, execution *domain.AutomationExecutionContext) {
 	startTime := time.Now()
 	s.logger.Info("Starting Git sync task", zap.Int64("configId", conf.ID), zap.Int64("uid", conf.UID))
 
@@ -555,7 +560,7 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	conf.LastStatus = domain.GitSyncStatusRunning
 	_, _ = s.repo.Save(ctx, conf, conf.UID)
 
-	err := s.doSync(ctx, conf)
+	err := s.doSync(ctx, conf, execution)
 
 	// No changes: restore original status, trigger Save only to update updated_at
 	// Without writing history, without changing last_sync_time / last_status / last_message
@@ -597,6 +602,8 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	// Create History Record
 	h := &domain.GitSyncHistory{
 		ConfigID:  conf.ID,
+		TriggerID: execution.TriggerID,
+		VaultID:   execution.VaultID,
 		UID:       conf.UID,
 		StartTime: startTime,
 		EndTime:   endTime,
@@ -650,8 +657,8 @@ func (s *gitSyncService) scheduleGC() {
 	})
 }
 
-func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig) error {
-	wsPath := s.getWorkspacePath(conf.UID, conf.ID)
+func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig, execution *domain.AutomationExecutionContext) error {
+	wsPath := s.getWorkspacePath(conf.UID, conf.ID, execution)
 	auth := &githttp.BasicAuth{
 		Username: conf.Username,
 		Password: conf.Password,
@@ -694,7 +701,7 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 		if err != nil {
 			// Try to re-init if open fails
 			_ = os.RemoveAll(wsPath)
-			return s.doSync(ctx, conf)
+			return s.doSync(ctx, conf, execution)
 		}
 	}
 

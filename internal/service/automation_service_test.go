@@ -7,96 +7,140 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 )
 
-func TestAutomationTriggerMatchesConditions(t *testing.T) {
+func TestAutomationTriggerMatchesOrEventBranches(t *testing.T) {
 	trigger := &domain.AutomationTrigger{
-		Enabled: true, EventType: domain.AutomationEventContent, VaultID: 7,
-		EventActions: []string{"modify"}, ContentContains: "release",
-		PathGlob: "Projects/*.md",
+		Enabled: true, VaultID: 7,
+		Events: []domain.AutomationEventRule{
+			{Type: domain.AutomationEventNoteContent, ContentContains: "release", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventFileBehavior, PathGlob: "Projects/*.md", EventActions: []string{"create"}},
+		},
 	}
-
-	matching := &domain.AutomationEvent{
-		Type: domain.AutomationEventContent, VaultID: 7, Action: "modify",
-		Path: "Projects/release.md", Content: "prepare release notes",
-	}
-	if !automationTriggerMatches(trigger, matching) {
-		t.Fatal("expected content event to match trigger")
-	}
-
-	matching.Content = "meeting notes"
-	if automationTriggerMatches(trigger, matching) {
-		t.Fatal("content matcher should reject unrelated content")
-	}
-
-	matching.Content = "prepare release notes"
-	matching.VaultID = 8
-	if automationTriggerMatches(trigger, matching) {
-		t.Fatal("vault matcher should reject another vault")
-	}
-}
-
-func TestAutomationTriggerMatchesUnrestrictedFileEvent(t *testing.T) {
-	trigger := &domain.AutomationTrigger{Enabled: true, EventType: domain.AutomationEventFile}
 	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
-		Type: domain.AutomationEventFile, VaultID: 1, Action: "delete", Path: "assets/image.png",
+		Type: domain.AutomationEventNoteContent, VaultID: 7, Action: "modify", Content: "prepare release notes",
 	}) {
-		t.Fatal("expected unrestricted file trigger to match")
+		t.Fatal("expected note content branch to match")
+	}
+	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventFileBehavior, VaultID: 7, Action: "create", Path: "Projects/readme.md",
+	}) {
+		t.Fatal("expected file behavior branch to match")
+	}
+	if automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventNoteContent, VaultID: 7, Action: "modify", Content: "meeting notes",
+	}) {
+		t.Fatal("unmatched branch should not trigger")
 	}
 }
 
 func TestAutomationTriggerMatchesRenameByOldOrNewPath(t *testing.T) {
 	trigger := &domain.AutomationTrigger{
-		Enabled: true, EventType: domain.AutomationEventFile, PathGlob: "Projects/*.md",
+		Enabled: true, VaultID: 1,
+		Events: []domain.AutomationEventRule{{Type: domain.AutomationEventFileBehavior, PathGlob: "Projects/*.md", EventActions: []string{"rename"}}},
 	}
 	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
-		Type: domain.AutomationEventFile, Action: "rename", Path: "Archive/notes.txt", OldPath: "Projects/notes.md",
+		Type: domain.AutomationEventFileBehavior, VaultID: 1, Action: "rename", Path: "Archive/notes.txt", OldPath: "Projects/notes.md",
 	}) {
 		t.Fatal("rename should match either the old or new path")
 	}
 }
 
-func TestAutomationFromRequestValidatesTimeAndTargets(t *testing.T) {
+func TestAutomationTriggerMatchesAllBranchesAndNeverDefaultsActions(t *testing.T) {
+	trigger := &domain.AutomationTrigger{
+		Enabled: true, VaultID: 1, MatchMode: domain.AutomationMatchAll,
+		Events: []domain.AutomationEventRule{
+			{Type: domain.AutomationEventNoteContent, ContentContains: "release", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "notes", EventActions: []string{"modify"}},
+		},
+	}
+	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release notes",
+	}) {
+		t.Fatal("expected all note conditions to match")
+	}
+	if automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release draft",
+	}) {
+		t.Fatal("all mode should require every branch")
+	}
+	if automationTriggerMatches(&domain.AutomationTrigger{
+		Enabled: true, VaultID: 1,
+		Events: []domain.AutomationEventRule{{Type: domain.AutomationEventNoteContent, ContentContains: "release"}},
+	}, &domain.AutomationEvent{Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release"}) {
+		t.Fatal("an empty action selection must not match every action")
+	}
+}
+
+func TestAutomationFromRequestValidatesBranchesAndTargets(t *testing.T) {
 	trigger, err := automationFromRequest(&dto.AutomationTriggerRequest{
-		Name: "nightly git", Enabled: true, EventType: domain.AutomationEventTime,
-		Timezone: "Asia/Shanghai", Schedule: "0 2 * * *",
+		Name: "nightly git", Enabled: true, VaultID: 9, Timezone: "Asia/Shanghai",
+		Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventCron, Schedule: "0 2 * * *"}},
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetGit, ConfigID: 4}},
 	}, 9)
 	if err != nil {
 		t.Fatalf("valid trigger rejected: %v", err)
 	}
-	if trigger.EventType != domain.AutomationEventTime || trigger.Actions[0].ConfigID != 4 {
+	if trigger.Events[0].Type != domain.AutomationEventCron || trigger.Actions[0].ConfigID != 4 {
 		t.Fatalf("unexpected trigger: %#v", trigger)
 	}
 
 	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
-		Name: "broken", EventType: domain.AutomationEventTime, Schedule: "not cron",
+		Name: "broken", Enabled: true, VaultID: 9,
+		Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventCron, Schedule: "not cron"}},
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetBackup, ConfigID: 1}},
 	}, 9); err == nil {
 		t.Fatal("invalid cron should be rejected")
 	}
 }
 
-func TestAutomationFromRequestTodoKeepsTriggerConditionsAndOnlyNotificationTargets(t *testing.T) {
+func TestAutomationTodoBranchOnlyAllowsNotificationTargets(t *testing.T) {
 	trigger, err := automationFromRequest(&dto.AutomationTriggerRequest{
-		Name: "todo reminders", Enabled: true, EventType: domain.AutomationEventTodo,
-		VaultID: 3, Timezone: "UTC", ContentContains: "@(", PathGlob: "Projects/*.md",
-		EventActions: []string{"create"},
-		Actions:      []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 8}},
+		Name: "todo reminders", Enabled: true, VaultID: 3, Timezone: "UTC",
+		Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventTodoReminder}},
+		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 8}},
 	}, 9)
 	if err != nil {
 		t.Fatalf("valid todo trigger rejected: %v", err)
 	}
-	if trigger.Timezone != "UTC" || trigger.ContentContains != "@(" || trigger.PathGlob != "Projects/*.md" {
-		t.Fatalf("todo trigger conditions were not preserved: %#v", trigger)
-	}
-	if len(trigger.EventActions) != 0 || len(trigger.Actions) != 1 || trigger.Actions[0].Type != domain.AutomationTargetWebhook {
-		t.Fatalf("unexpected todo trigger routing: %#v", trigger)
+	if trigger.Timezone != "UTC" || len(trigger.Events) != 1 || len(trigger.Actions) != 1 {
+		t.Fatalf("unexpected todo trigger: %#v", trigger)
 	}
 
 	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
-		Name: "invalid todo", Enabled: true, EventType: domain.AutomationEventTodo,
+		Name: "invalid todo", Enabled: true, VaultID: 3,
+		Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventTodoReminder}},
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetBackup, ConfigID: 1}},
 	}, 9); err == nil {
 		t.Fatal("todo trigger should reject non-notification targets")
+	}
+}
+
+func TestAutomationFromRequestRequiresExplicitActionsAndValidMatchMode(t *testing.T) {
+	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
+		Name: "all note conditions", Enabled: true, VaultID: 1, MatchMode: "all",
+		Events: []dto.AutomationEventRuleDTO{
+			{Type: domain.AutomationEventNoteContent, ContentContains: "a", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "b", EventActions: []string{"modify"}},
+		},
+		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
+	}, 1); err != nil {
+		t.Fatalf("valid all-mode trigger rejected: %v", err)
+	}
+	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
+		Name: "missing actions", Enabled: true, VaultID: 1,
+		Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventFileBehavior, PathGlob: "*.md"}},
+		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
+	}, 1); err == nil {
+		t.Fatal("file behavior should require explicit action selections")
+	}
+	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
+		Name: "mixed all-mode", Enabled: true, VaultID: 1, MatchMode: "all",
+		Events: []dto.AutomationEventRuleDTO{
+			{Type: domain.AutomationEventCron, Schedule: "0 * * * *"},
+			{Type: domain.AutomationEventManual},
+		},
+		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
+	}, 1); err == nil {
+		t.Fatal("all-mode should reject mixed event types")
 	}
 }
 
@@ -111,7 +155,7 @@ func TestAutomationEventFromSyncLogNormalizesFileActions(t *testing.T) {
 		{domain.SyncLogActionDelete, "permanent_delete"},
 	} {
 		event := automationEventFromSyncLog(&domain.SyncLog{UID: 1, VaultID: 2, Action: test.action, Path: "a.bin"})
-		if event.Type != domain.AutomationEventFile || event.Action != test.want {
+		if event.Type != domain.AutomationEventFileBehavior || event.Action != test.want {
 			t.Fatalf("action %q mapped to %#v, want %q", test.action, event, test.want)
 		}
 	}

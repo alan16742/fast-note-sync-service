@@ -171,42 +171,6 @@ func (h *BackupHandler) ListHistory(c *gin.Context) {
 	response.ToResponseList(code.Success, list, int(total))
 }
 
-// Execute triggers a backup manually
-// @Summary Trigger a backup manually
-// @Tags Backup
-// @Security UserAuthToken
-// @Produce json
-// @Param params body dto.BackupExecuteRequest true "Backup Execute Parameters"
-// @Success 200 {object} pkgapp.Res "Success"
-// @Failure 400 {object} pkgapp.Res "Invalid Params"
-// @Failure 401 {object} pkgapp.Res "Token Required"
-// @Failure 500 {object} pkgapp.Res "Internal Server Error"
-// @Router /api/backup/execute [post]
-func (h *BackupHandler) Execute(c *gin.Context) {
-
-	response := pkgapp.NewResponse(c)
-	params := &dto.BackupExecuteRequest{}
-	if valid, errs := pkgapp.BindAndValid(c, params); !valid {
-		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
-		return
-	}
-
-	uid := pkgapp.GetUID(c)
-	if uid == 0 {
-		response.ToResponse(code.ErrorNotUserAuthToken)
-		return
-	}
-
-	err := h.App.BackupService.ExecuteUserBackup(c.Request.Context(), uid, params.ID)
-	if err != nil {
-		h.logError(c.Request.Context(), "BackupHandler.Execute", err)
-		apperrors.ErrorResponse(c, err)
-		return
-	}
-
-	response.ToResponse(code.Success.WithDetails("Backup task completed, check history for details"))
-}
-
 func (h *BackupHandler) logError(ctx context.Context, method string, err error) {
 	traceID := middleware.GetTraceID(ctx)
 	h.App.Logger().Error(method,

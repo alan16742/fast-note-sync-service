@@ -89,13 +89,13 @@ func newReminderTestEnv(t *testing.T) *reminderTestEnv {
 		}
 	})
 	webhooks := dao.NewWebhookRepository(d)
-	target, err := webhooks.Save(ctx, &domain.WebhookSubscription{UID: 1, Enabled: true, Provider: "bark", Secret: "test-key"}, 1)
+	target, err := webhooks.Save(ctx, &domain.WebhookSubscription{UID: 1, Provider: "bark", Secret: "test-key"}, 1)
 	require.NoError(t, err, "first operation must migrate before saving")
 	start := time.Date(2026, 9, 6, 14, 40, 0, 0, time.UTC)
 	triggers := dao.NewAutomationRepository(d)
-	trigger, err := triggers.Save(ctx, &domain.AutomationTrigger{UID: 1, Enabled: true, EventType: domain.AutomationEventTodo, Timezone: "Asia/Shanghai", Actions: []domain.AutomationAction{{Type: domain.AutomationTargetWebhook, ConfigID: target.ID}}}, 1)
+	trigger, err := triggers.Save(ctx, &domain.AutomationTrigger{UID: 1, Enabled: true, VaultID: 1, Timezone: "Asia/Shanghai", Events: []domain.AutomationEventRule{{Type: domain.AutomationEventTodoReminder}}, Actions: []domain.AutomationAction{{Type: domain.AutomationTargetWebhook, ConfigID: target.ID}}}, 1)
 	require.NoError(t, err)
-	require.NoError(t, d.ResolveDB("user_automation_1").Table("automation_trigger").Where("id = ?", trigger.ID).Update("created_at", start).Error)
+	require.NoError(t, d.ResolveDB("user_automation_1").Table("automation_rule").Where("id = ?", trigger.ID).Update("created_at", start).Error)
 	trigger, err = triggers.GetByID(ctx, trigger.ID, 1)
 	require.NoError(t, err)
 	notes := &reminderNotes{note: &domain.Note{ID: 1, VaultID: 1, Path: "todo.md", Content: "- [ ] todo @(2026-09-06 22:45; remind=0,+1h)", UpdatedTimestamp: start.UnixMilli()}}

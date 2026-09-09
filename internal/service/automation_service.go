@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -112,7 +113,40 @@ func (s *automationService) Save(ctx context.Context, uid int64, request *dto.Au
 	if err != nil {
 		return nil, err
 	}
-	return automationToDTO(saved), nil
+	result := automationToDTO(saved)
+	result.Warnings = s.targetReuseWarnings(ctx, uid, saved)
+	return result, nil
+}
+
+func (s *automationService) targetReuseWarnings(ctx context.Context, uid int64, trigger *domain.AutomationTrigger) []string {
+	if trigger == nil {
+		return nil
+	}
+	triggers, err := s.repo.List(ctx, uid)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var warnings []string
+	for _, existing := range triggers {
+		if existing.ID == trigger.ID || existing.VaultID == trigger.VaultID {
+			continue
+		}
+		for _, action := range trigger.Actions {
+			for _, other := range existing.Actions {
+				if action.Type != other.Type || action.ConfigID != other.ConfigID {
+					continue
+				}
+				key := fmt.Sprintf("%s:%d:%d", action.Type, action.ConfigID, existing.VaultID)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				warnings = append(warnings, fmt.Sprintf("target %s#%d is also used by vault %d", action.Type, action.ConfigID, existing.VaultID))
+			}
+		}
+	}
+	return warnings
 }
 
 func (s *automationService) Delete(ctx context.Context, uid, id int64) error {
@@ -139,16 +173,13 @@ func (s *automationService) Trigger(ctx context.Context, uid int64, request *dto
 	if !trigger.Enabled {
 		return errors.New("automation trigger is disabled")
 	}
-	if trigger.EventType != domain.AutomationEventManual {
+	if !automationTriggerHasEvent(trigger, domain.AutomationEventManual) {
 		return errors.New("only manual triggers can be run manually")
 	}
 	event := &domain.AutomationEvent{
 		ID: uuid.NewString(), OccurredAt: time.Now().UTC(), UID: uid,
-		VaultID: request.VaultID, Type: domain.AutomationEventManual,
+		VaultID: trigger.VaultID, Type: domain.AutomationEventManual,
 		Action: "manual", Source: "manual_api",
-	}
-	if event.VaultID == 0 {
-		event.VaultID = trigger.VaultID
 	}
 	s.enrichEvent(ctx, event)
 	if !automationTriggerMatches(trigger, event) {
@@ -227,7 +258,7 @@ func (s *automationService) dispatchTrigger(ctx context.Context, trigger *domain
 	for _, action := range trigger.Actions {
 		action := action
 		submit := func(taskCtx context.Context) error {
-			return s.executeAction(taskCtx, event, action)
+			return s.executeAction(taskCtx, trigger.ID, event, action)
 		}
 		if s.pool == nil {
 			if err := submit(ctx); err != nil {
@@ -246,7 +277,7 @@ func (s *automationService) dispatchTrigger(ctx context.Context, trigger *domain
 	return firstErr
 }
 
-func (s *automationService) executeAction(ctx context.Context, event *domain.AutomationEvent, action domain.AutomationAction) error {
+func (s *automationService) executeAction(ctx context.Context, triggerID int64, event *domain.AutomationEvent, action domain.AutomationAction) error {
 	if action.ConfigID <= 0 {
 		return errors.New("automation target config id is required")
 	}
@@ -255,12 +286,12 @@ func (s *automationService) executeAction(ctx context.Context, event *domain.Aut
 		if s.backupService == nil {
 			return errors.New("backup service is unavailable")
 		}
-		return s.backupService.ExecuteUserBackup(ctx, event.UID, action.ConfigID)
+		return s.backupService.ExecuteUserBackup(ctx, event.UID, action.ConfigID, &domain.AutomationExecutionContext{UID: event.UID, TriggerID: triggerID, VaultID: event.VaultID, EventID: event.ID, OccurredAt: event.OccurredAt})
 	case domain.AutomationTargetGit:
 		if s.gitSyncService == nil {
 			return errors.New("git sync service is unavailable")
 		}
-		return s.gitSyncService.ExecuteSync(ctx, event.UID, action.ConfigID)
+		return s.gitSyncService.ExecuteSync(ctx, event.UID, action.ConfigID, &domain.AutomationExecutionContext{UID: event.UID, TriggerID: triggerID, VaultID: event.VaultID, EventID: event.ID, OccurredAt: event.OccurredAt})
 	case domain.AutomationTargetWebhook:
 		if s.webhookService == nil {
 			return errors.New("webhook service is unavailable")
@@ -296,9 +327,9 @@ func (s *automationService) runClock() {
 }
 
 func (s *automationService) pollTimeTriggers() {
-	triggers, err := s.repo.ListEnabledByType(s.ctx, domain.AutomationEventTime)
+	triggers, err := s.repo.ListEnabledByType(s.ctx, domain.AutomationEventCron)
 	if err != nil {
-		s.logger.Warn("load time automation triggers failed", zap.Error(err))
+		s.logger.Warn("load cron automation triggers failed", zap.Error(err))
 		return
 	}
 	now := time.Now()
@@ -307,24 +338,41 @@ func (s *automationService) pollTimeTriggers() {
 		if err != nil {
 			location = time.Local
 		}
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		schedule, err := parser.Parse(trigger.Schedule)
-		if err != nil {
-			s.logger.Warn("invalid automation schedule", zap.Int64("triggerID", trigger.ID), zap.Error(err))
-			continue
-		}
 		localNow := now.In(location)
 		last := trigger.LastRunAt.In(location)
 		if trigger.LastRunAt.IsZero() {
 			last = localNow.Add(-time.Minute)
 		}
-		if schedule.Next(last).After(localNow) {
+		due := false
+		cronRuleCount := 0
+		cronMatches := 0
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		for _, eventRule := range trigger.Events {
+			if eventRule.Type != domain.AutomationEventCron {
+				continue
+			}
+			cronRuleCount++
+			schedule, parseErr := parser.Parse(eventRule.Schedule)
+			if parseErr != nil {
+				s.logger.Warn("invalid automation schedule", zap.Int64("triggerID", trigger.ID), zap.Error(parseErr))
+				continue
+			}
+			if !schedule.Next(last).After(localNow) {
+				cronMatches++
+			}
+		}
+		if trigger.MatchMode == domain.AutomationMatchAll {
+			due = cronRuleCount > 0 && cronMatches == cronRuleCount
+		} else {
+			due = cronMatches > 0
+		}
+		if !due {
 			continue
 		}
 		event := &domain.AutomationEvent{
 			ID: uuid.NewString(), OccurredAt: now.UTC(), UID: trigger.UID,
-			VaultID: trigger.VaultID, Type: domain.AutomationEventTime,
-			Action: "time", Source: "automation_clock",
+			VaultID: trigger.VaultID, Type: domain.AutomationEventCron,
+			Action: "cron", Source: "automation_clock",
 		}
 		s.enrichEvent(s.ctx, event)
 		if err := s.dispatchTrigger(context.Background(), trigger, event); err != nil {
@@ -373,14 +421,8 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 	if request == nil {
 		return nil, errors.New("automation trigger request is required")
 	}
-	if request.ID < 0 || request.VaultID < 0 {
+	if request.ID < 0 || request.VaultID <= 0 {
 		return nil, errors.New("invalid automation trigger or vault id")
-	}
-	eventType := domain.AutomationEventType(strings.ToLower(strings.TrimSpace(string(request.EventType))))
-	switch eventType {
-	case domain.AutomationEventTime, domain.AutomationEventContent, domain.AutomationEventManual, domain.AutomationEventFile, domain.AutomationEventTodo:
-	default:
-		return nil, fmt.Errorf("unsupported automation event type: %s", request.EventType)
 	}
 	name := strings.TrimSpace(request.Name)
 	if name == "" {
@@ -389,8 +431,82 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 	if len(name) > 120 {
 		return nil, errors.New("automation trigger name is too long")
 	}
+	matchMode := normalizeAutomationMatchMode(request.MatchMode)
+	if matchMode == "" {
+		return nil, errors.New("automation trigger match mode must be any or all")
+	}
+	if len(request.Events) == 0 {
+		return nil, errors.New("automation trigger requires at least one event branch")
+	}
+	events := make([]domain.AutomationEventRule, 0, len(request.Events))
+	seenEvents := make(map[string]struct{}, len(request.Events))
+	needsTimezone := false
+	hasTodo := false
+	for _, item := range request.Events {
+		eventType := normalizeAutomationEventType(item.Type)
+		rule := domain.AutomationEventRule{Type: eventType}
+		var err error
+		switch eventType {
+		case domain.AutomationEventCron:
+			rule.Schedule = strings.TrimSpace(item.Schedule)
+			if rule.Schedule == "" {
+				return nil, errors.New("cron event requires a schedule")
+			}
+			parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+			if _, err := parser.Parse(rule.Schedule); err != nil {
+				return nil, fmt.Errorf("invalid cron schedule: %w", err)
+			}
+			needsTimezone = true
+		case domain.AutomationEventNoteContent:
+			rule.ContentContains = strings.TrimSpace(item.ContentContains)
+			rule.EventActions, err = normalizeEventActions(item.EventActions)
+			if err != nil {
+				return nil, err
+			}
+			if len(rule.EventActions) == 0 {
+				return nil, errors.New("note content event requires at least one event action")
+			}
+		case domain.AutomationEventFileBehavior:
+			rule.PathPrefix = strings.TrimSpace(item.PathPrefix)
+			rule.PathGlob = strings.TrimSpace(item.PathGlob)
+			if rule.PathGlob != "" {
+				if _, err := path.Match(rule.PathGlob, ""); err != nil {
+					return nil, errors.New("invalid path glob")
+				}
+			}
+			rule.EventActions, err = normalizeEventActions(item.EventActions)
+			if err != nil {
+				return nil, err
+			}
+			if len(rule.EventActions) == 0 {
+				return nil, errors.New("file behavior event requires at least one event action")
+			}
+		case domain.AutomationEventTodoReminder:
+			hasTodo = true
+			needsTimezone = true
+		case domain.AutomationEventManual:
+		default:
+			return nil, fmt.Errorf("unsupported automation event type: %s", item.Type)
+		}
+		if len(rule.ContentContains) > 4096 || len(rule.PathPrefix) > 4096 || len(rule.PathGlob) > 4096 {
+			return nil, errors.New("automation condition is too long")
+		}
+		key, _ := json.Marshal(rule)
+		if _, exists := seenEvents[string(key)]; exists {
+			continue
+		}
+		seenEvents[string(key)] = struct{}{}
+		events = append(events, rule)
+	}
+	if matchMode == string(domain.AutomationMatchAll) && len(events) > 1 {
+		for _, event := range events[1:] {
+			if event.Type != events[0].Type {
+				return nil, errors.New("all event branches must use the same event type")
+			}
+		}
+	}
 	timezone := strings.TrimSpace(request.Timezone)
-	if eventType == domain.AutomationEventTime || eventType == domain.AutomationEventTodo {
+	if needsTimezone {
 		if timezone == "" {
 			timezone = automationDefaultTimezone
 		}
@@ -399,45 +515,6 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		}
 	} else {
 		timezone = ""
-	}
-	schedule := strings.TrimSpace(request.Schedule)
-	if eventType == domain.AutomationEventTime {
-		if schedule == "" {
-			return nil, errors.New("time triggers require a cron schedule")
-		}
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := parser.Parse(schedule); err != nil {
-			return nil, fmt.Errorf("invalid cron schedule: %w", err)
-		}
-	} else {
-		schedule = ""
-	}
-	pathGlob := strings.TrimSpace(request.PathGlob)
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile && eventType != domain.AutomationEventTodo {
-		pathGlob = ""
-	}
-	if pathGlob != "" {
-		if _, err := path.Match(pathGlob, ""); err != nil {
-			return nil, errors.New("invalid path glob")
-		}
-	}
-	contentContains := strings.TrimSpace(request.ContentContains)
-	pathPrefix := strings.TrimSpace(request.PathPrefix)
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventTodo {
-		contentContains = ""
-	}
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile && eventType != domain.AutomationEventTodo {
-		pathPrefix = ""
-	}
-	eventActions, err := normalizeEventActions(request.EventActions)
-	if err != nil {
-		return nil, err
-	}
-	if eventType != domain.AutomationEventContent && eventType != domain.AutomationEventFile {
-		eventActions = nil
-	}
-	if len(contentContains) > 4096 || len(pathPrefix) > 4096 || len(pathGlob) > 4096 {
-		return nil, errors.New("automation condition is too long")
 	}
 	actions := make([]domain.AutomationAction, 0, len(request.Actions))
 	seenTargets := make(map[string]struct{}, len(request.Actions))
@@ -451,9 +528,6 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		if item.ConfigID <= 0 {
 			return nil, errors.New("automation target config id is required")
 		}
-		if eventType == domain.AutomationEventTodo && targetType != domain.AutomationTargetWebhook {
-			return nil, errors.New("todo triggers can only target notification channels")
-		}
 		targetKey := fmt.Sprintf("%s:%d", targetType, item.ConfigID)
 		if _, exists := seenTargets[targetKey]; exists {
 			continue
@@ -461,15 +535,46 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		seenTargets[targetKey] = struct{}{}
 		actions = append(actions, domain.AutomationAction{Type: targetType, ConfigID: item.ConfigID})
 	}
+	if hasTodo {
+		for _, action := range actions {
+			if action.Type != domain.AutomationTargetWebhook {
+				return nil, errors.New("triggers containing todo reminders can only target notification channels")
+			}
+		}
+	}
 	if len(actions) == 0 {
 		return nil, errors.New("automation trigger requires at least one target")
 	}
 	return &domain.AutomationTrigger{
-		ID: request.ID, UID: uid, Name: name, Enabled: request.Enabled, EventType: eventType,
-		VaultID: request.VaultID, Timezone: timezone, Schedule: schedule,
-		ContentContains: contentContains, PathPrefix: pathPrefix,
-		PathGlob: pathGlob, EventActions: eventActions, Actions: actions,
+		ID: request.ID, UID: uid, Name: name, Enabled: request.Enabled,
+		VaultID: request.VaultID, Timezone: timezone, MatchMode: domain.AutomationMatchMode(matchMode), Events: events, Actions: actions,
 	}, nil
+}
+
+func normalizeAutomationMatchMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "any", "or":
+		return string(domain.AutomationMatchAny)
+	case "all", "and":
+		return string(domain.AutomationMatchAll)
+	default:
+		return ""
+	}
+}
+
+func normalizeAutomationEventType(eventType domain.AutomationEventType) domain.AutomationEventType {
+	switch strings.ToLower(strings.TrimSpace(string(eventType))) {
+	case "time":
+		return domain.AutomationEventCron
+	case "content":
+		return domain.AutomationEventNoteContent
+	case "file":
+		return domain.AutomationEventFileBehavior
+	case "todo":
+		return domain.AutomationEventTodoReminder
+	default:
+		return domain.AutomationEventType(strings.ToLower(strings.TrimSpace(string(eventType))))
+	}
 }
 
 func normalizeEventActions(actions []string) ([]string, error) {
@@ -495,30 +600,70 @@ func normalizeEventActions(actions []string) ([]string, error) {
 }
 
 func automationTriggerMatches(trigger *domain.AutomationTrigger, event *domain.AutomationEvent) bool {
-	if trigger == nil || event == nil || !trigger.Enabled || trigger.EventType != event.Type {
+	if trigger == nil || event == nil || !trigger.Enabled || trigger.VaultID != event.VaultID {
 		return false
 	}
-	if trigger.VaultID > 0 && trigger.VaultID != event.VaultID {
+	matchMode := trigger.MatchMode
+	if matchMode == "" {
+		matchMode = domain.AutomationMatchAny
+	}
+	matched := 0
+	for _, rule := range trigger.Events {
+		if rule.Type != normalizeAutomationEventType(event.Type) {
+			if matchMode == domain.AutomationMatchAll {
+				return false
+			}
+			continue
+		}
+		if automationEventRuleMatches(rule, event) {
+			matched++
+			if matchMode == domain.AutomationMatchAny {
+				return true
+			}
+		} else if matchMode == domain.AutomationMatchAll {
+			return false
+		}
+	}
+	return matchMode == domain.AutomationMatchAll && matched == len(trigger.Events) && matched > 0
+}
+
+func automationTriggerHasEvent(trigger *domain.AutomationTrigger, eventType domain.AutomationEventType) bool {
+	if trigger == nil {
 		return false
 	}
-	if len(trigger.EventActions) > 0 && !containsString(trigger.EventActions, event.Action) {
-		return false
+	for _, rule := range trigger.Events {
+		if rule.Type == eventType {
+			return true
+		}
 	}
-	if trigger.ContentContains != "" && !strings.Contains(event.Content, trigger.ContentContains) {
-		return false
+	return false
+}
+
+func automationEventRuleMatches(rule domain.AutomationEventRule, event *domain.AutomationEvent) bool {
+	if rule.Type == domain.AutomationEventNoteContent {
+		if rule.ContentContains != "" && !strings.Contains(event.Content, rule.ContentContains) {
+			return false
+		}
+		return len(rule.EventActions) > 0 && containsString(rule.EventActions, event.Action)
 	}
-	if trigger.PathPrefix != "" || trigger.PathGlob != "" {
+	if rule.Type == domain.AutomationEventFileBehavior {
+		if len(rule.EventActions) == 0 || !containsString(rule.EventActions, event.Action) {
+			return false
+		}
+		if rule.PathPrefix == "" && rule.PathGlob == "" {
+			return true
+		}
 		paths := []string{event.Path}
 		if event.OldPath != "" && event.OldPath != event.Path {
 			paths = append(paths, event.OldPath)
 		}
 		matchedPath := false
 		for _, pathValue := range paths {
-			if trigger.PathPrefix != "" && !strings.HasPrefix(pathValue, trigger.PathPrefix) {
+			if rule.PathPrefix != "" && !strings.HasPrefix(pathValue, rule.PathPrefix) {
 				continue
 			}
-			if trigger.PathGlob != "" {
-				matched, err := path.Match(trigger.PathGlob, pathValue)
+			if rule.PathGlob != "" {
+				matched, err := path.Match(rule.PathGlob, pathValue)
 				if err != nil || !matched {
 					continue
 				}
@@ -526,9 +671,7 @@ func automationTriggerMatches(trigger *domain.AutomationTrigger, event *domain.A
 			matchedPath = true
 			break
 		}
-		if !matchedPath {
-			return false
-		}
+		return matchedPath
 	}
 	return true
 }
@@ -550,11 +693,13 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 	for _, action := range trigger.Actions {
 		actions = append(actions, dto.AutomationActionDTO{Type: action.Type, ConfigID: action.ConfigID})
 	}
+	events := make([]dto.AutomationEventRuleDTO, 0, len(trigger.Events))
+	for _, event := range trigger.Events {
+		events = append(events, dto.AutomationEventRuleDTO{Type: event.Type, Schedule: event.Schedule, ContentContains: event.ContentContains, PathPrefix: event.PathPrefix, PathGlob: event.PathGlob, EventActions: append([]string(nil), event.EventActions...)})
+	}
 	result := &dto.AutomationTriggerDTO{
 		ID: trigger.ID, UID: trigger.UID, Name: trigger.Name, Enabled: trigger.Enabled,
-		EventType: trigger.EventType, VaultID: trigger.VaultID, Timezone: trigger.Timezone,
-		Schedule: trigger.Schedule, ContentContains: trigger.ContentContains, PathPrefix: trigger.PathPrefix,
-		PathGlob: trigger.PathGlob, EventActions: append([]string(nil), trigger.EventActions...), Actions: actions,
+		VaultID: trigger.VaultID, Timezone: trigger.Timezone, MatchMode: string(trigger.MatchMode), Events: events, Actions: actions,
 		CreatedAt: trigger.CreatedAt.Format(time.RFC3339), UpdatedAt: trigger.UpdatedAt.Format(time.RFC3339),
 	}
 	if !trigger.LastRunAt.IsZero() {
@@ -566,7 +711,7 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 func automationEventFromNote(event *domain.ContentChangeEvent) *domain.AutomationEvent {
 	return &domain.AutomationEvent{
 		ID: event.ID, OccurredAt: event.OccurredAt, UID: event.UID, VaultID: event.VaultID,
-		VaultName: event.VaultName, Type: domain.AutomationEventContent, Action: string(event.Action),
+		VaultName: event.VaultName, Type: domain.AutomationEventNoteContent, Action: string(event.Action),
 		Path: event.Path, OldPath: event.OldPath, PathHash: event.PathHash, ChangedFields: append([]string(nil), event.ChangedFields...),
 		Content: event.Content, ContentHash: event.ContentHash, Size: event.Size,
 		ClientType: event.ClientType, ClientName: event.ClientName, ClientVersion: event.ClientVersion, Source: event.Source,
@@ -586,7 +731,7 @@ func automationEventFromSyncLog(log *domain.SyncLog) *domain.AutomationEvent {
 	}
 	return &domain.AutomationEvent{
 		ID: uuid.NewString(), OccurredAt: time.Time(log.CreatedAt), UID: log.UID, VaultID: log.VaultID,
-		Type: domain.AutomationEventFile, Action: action, Path: log.Path, PathHash: log.PathHash,
+		Type: domain.AutomationEventFileBehavior, Action: action, Path: log.Path, PathHash: log.PathHash,
 		ChangedFields: splitChangedFields(log.ChangedFields), Size: log.Size,
 		ClientType: log.ClientType, ClientName: log.ClientName, ClientVersion: log.ClientVersion,
 		Source: "sync_log",

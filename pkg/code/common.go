@@ -118,7 +118,6 @@ var (
 	ErrorBackupExecuteIDReq     = NewError(496)
 	ErrorBackupVaultRequired    = NewError(497)
 	ErrorBackupStorageIDInvalid = NewError(498)
-	ErrorBackupConfigDisabled   = NewError(499)
 
 	// --- Storage Related (500-509) ---
 	ErrorStorageNotFound       = NewError(500)

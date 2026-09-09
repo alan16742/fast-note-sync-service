@@ -5,6 +5,7 @@ package mocks
 import (
 	"context"
 
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -50,8 +51,8 @@ func (m *MockBackupService) ListHistory(ctx context.Context, uid int64, configID
 	return nil, args.Get(1).(int64), args.Error(2)
 }
 
-func (m *MockBackupService) ExecuteUserBackup(ctx context.Context, uid int64, configID int64) error {
-	args := m.Called(ctx, uid, configID)
+func (m *MockBackupService) ExecuteUserBackup(ctx context.Context, uid int64, configID int64, execution *domain.AutomationExecutionContext) error {
+	args := m.Called(ctx, uid, configID, execution)
 	return args.Error(0)
 }
 

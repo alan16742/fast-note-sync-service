@@ -257,7 +257,7 @@ CREATE TABLE "storage" (
     "access_url_prefix" text DEFAULT '',
     "user" text DEFAULT '',
     "password" text DEFAULT '',
-    "is_enabled" integer NOT NULL DEFAULT 0,
+	"is_enabled" integer NOT NULL DEFAULT 0,
     "is_deleted" integer NOT NULL DEFAULT 0,
     "created_at" datetime DEFAULT NULL,
     "updated_at" datetime DEFAULT NULL,
@@ -279,8 +279,7 @@ CREATE TABLE "backup_config" (
     -- full, incremental, sync
     "storage_ids" text DEFAULT '',
     -- JSON array of storage ids: [1, 2]
-    "is_enabled" integer DEFAULT 0,
-    "include_vault_name" integer DEFAULT 0,
+	"include_vault_name" integer DEFAULT 0,
     -- Whether to include vault name in backup file name
     "retention_days" integer DEFAULT 10,
     -- Retention policy (days)
@@ -305,6 +304,8 @@ CREATE TABLE "backup_history" (
     "id" integer PRIMARY KEY AUTOINCREMENT,
     "uid" integer NOT NULL DEFAULT 0,
     "config_id" integer NOT NULL DEFAULT 0,
+    "trigger_id" integer NOT NULL DEFAULT 0,
+    "vault_id" integer NOT NULL DEFAULT 0,
     "storage_id" integer NOT NULL DEFAULT 0,
     "type" text DEFAULT '',
     -- full, incremental, sync
@@ -326,6 +327,8 @@ CREATE TABLE "backup_history" (
 CREATE INDEX "idx_backup_history_uid" ON "backup_history" ("uid", "created_at" DESC);
 
 CREATE INDEX "idx_backup_history_config_id" ON "backup_history" ("config_id");
+CREATE INDEX "idx_backup_history_trigger_id" ON "backup_history" ("trigger_id");
+CREATE INDEX "idx_backup_history_vault_id" ON "backup_history" ("vault_id");
 
 -- ----------------------------
 -- Table structure for git_sync_config
@@ -344,9 +347,7 @@ CREATE TABLE "git_sync_config" (
     -- 认证密码或 Personal Access Token
     "branch" text DEFAULT 'main',
     -- 分支名
-    "is_enabled" integer DEFAULT 0,
-    -- 是否启用自动同步
-    "retention_days" integer DEFAULT 0,
+	"retention_days" integer DEFAULT 0,
     -- 历史记录保留天数, 0: 不清理, -1: 仅保留最新, >0: 保留天数
     "last_sync_time" datetime DEFAULT NULL,
     -- 上次同步时间
@@ -373,6 +374,8 @@ CREATE TABLE "git_sync_history" (
     "id" integer PRIMARY KEY AUTOINCREMENT,
     "uid" integer NOT NULL DEFAULT 0,
     "config_id" integer NOT NULL DEFAULT 0,
+    "trigger_id" integer NOT NULL DEFAULT 0,
+    "vault_id" integer NOT NULL DEFAULT 0,
     "start_time" datetime DEFAULT NULL,
     "end_time" datetime DEFAULT NULL,
     "status" integer DEFAULT 0,
@@ -385,6 +388,8 @@ CREATE TABLE "git_sync_history" (
 CREATE INDEX "idx_git_sync_history_uid" ON "git_sync_history" ("uid", "created_at" DESC);
 
 CREATE INDEX "idx_git_sync_history_config_id" ON "git_sync_history" ("config_id");
+CREATE INDEX "idx_git_sync_history_trigger_id" ON "git_sync_history" ("trigger_id");
+CREATE INDEX "idx_git_sync_history_vault_id" ON "git_sync_history" ("vault_id");
 
 -- ----------------------------
 -- Table structure for sync_log
@@ -413,32 +418,27 @@ CREATE INDEX "idx_sync_log_uid_created_at"  ON "sync_log" ("uid", "created_at" D
 CREATE INDEX "idx_sync_log_uid_type_action" ON "sync_log" ("uid", "type", "action");
 
 -- ----------------------------
--- Table structure for automation_trigger
+-- Table structure for automation_rule
 -- ----------------------------
-DROP TABLE IF EXISTS "automation_trigger";
+DROP TABLE IF EXISTS "automation_rule";
 
-CREATE TABLE "automation_trigger" (
-    "id"               integer PRIMARY KEY AUTOINCREMENT,
-    "uid"              integer NOT NULL,
-    "name"             text NOT NULL DEFAULT '',
-    "enabled"          integer NOT NULL DEFAULT 0,
-    "event_type"       text NOT NULL DEFAULT '',
-    "vault_id"         integer NOT NULL DEFAULT 0,
-    "timezone"         text NOT NULL DEFAULT 'Asia/Shanghai',
-    "schedule"         text NOT NULL DEFAULT '',
-    "content_contains"  text NOT NULL DEFAULT '',
-    "path_prefix"      text NOT NULL DEFAULT '',
-    "path_glob"        text NOT NULL DEFAULT '',
-    "event_actions"    text NOT NULL DEFAULT '[]',
-    "actions"          text NOT NULL DEFAULT '[]',
-    "last_run_at"      integer NOT NULL DEFAULT 0,
-    "created_at"       datetime DEFAULT NULL,
-    "updated_at"       datetime DEFAULT NULL
+CREATE TABLE "automation_rule" (
+    "id"          integer PRIMARY KEY AUTOINCREMENT,
+    "uid"         integer NOT NULL,
+    "name"        text NOT NULL DEFAULT '',
+    "enabled"     integer NOT NULL DEFAULT 0,
+    "vault_id"    integer NOT NULL,
+    "timezone"    text NOT NULL DEFAULT 'Asia/Shanghai',
+    "match_mode"  text NOT NULL DEFAULT 'any',
+    "events"      text NOT NULL DEFAULT '[]',
+    "actions"     text NOT NULL DEFAULT '[]',
+    "last_run_at" integer NOT NULL DEFAULT 0,
+    "created_at"  datetime DEFAULT NULL,
+    "updated_at"  datetime DEFAULT NULL
 );
 
-CREATE INDEX "idx_automation_trigger_uid" ON "automation_trigger" ("uid");
-CREATE INDEX "idx_automation_trigger_enabled" ON "automation_trigger" ("enabled");
-CREATE INDEX "idx_automation_trigger_type" ON "automation_trigger" ("event_type");
+CREATE INDEX "idx_automation_rule_uid" ON "automation_rule" ("uid");
+CREATE INDEX "idx_automation_rule_enabled" ON "automation_rule" ("enabled");
 
 -- ----------------------------
 -- Table structure for auth_token

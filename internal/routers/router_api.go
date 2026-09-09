@@ -224,7 +224,6 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.POST("/backup/config", backupHandler.UpdateConfig)
 				webguiGroup.DELETE("/backup/config", backupHandler.DeleteConfig)
 				webguiGroup.GET("/backup/historys", backupHandler.ListHistory)
-				webguiGroup.POST("/backup/execute", backupHandler.Execute)
 
 				// Git sync routes
 				// Git 同步接口
@@ -233,7 +232,6 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.DELETE("/git-sync/config", gitSyncHandler.DeleteConfig)
 				webguiGroup.POST("/git-sync/validate", gitSyncHandler.Validate)
 				webguiGroup.DELETE("/git-sync/config/clean", gitSyncHandler.CleanWorkspace)
-				webguiGroup.POST("/git-sync/config/execute", gitSyncHandler.Execute)
 				webguiGroup.GET("/git-sync/histories", gitSyncHandler.GetHistories)
 
 				// Webhook routes

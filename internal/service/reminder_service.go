@@ -101,7 +101,7 @@ func (s *ReminderService) Tick(ctx context.Context, now time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		triggers, err := s.triggers.ListEnabled(ctx, uid, domain.AutomationEventTodo)
+		triggers, err := s.triggers.ListEnabled(ctx, uid, domain.AutomationEventTodoReminder)
 		if err != nil {
 			s.logger.Warn("load todo triggers failed", zap.Int64("uid", uid), zap.Error(err))
 			continue
@@ -178,7 +178,7 @@ func (s *ReminderService) indexVault(ctx context.Context, uid int64, trigger *do
 				}
 				return err
 			}
-			if note != nil && !note.IsDeleted() && automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodo, UID: uid, VaultID: vault.ID, Path: note.Path, Content: note.Content}) {
+			if note != nil && !note.IsDeleted() && automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodoReminder, UID: uid, VaultID: vault.ID, Path: note.Path, Content: note.Content}) {
 				tasks, issues := reminder.Parse(note.Content, trigger.Timezone)
 				for _, issue := range issues {
 					s.logger.Warn("invalid todo annotation", zap.Int64("uid", uid), zap.Int64("note", note.ID), zap.Error(issue))
@@ -221,7 +221,7 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	if err != nil {
 		return s.retry(ctx, job, token, now, err)
 	}
-	if trigger == nil || !trigger.Enabled || trigger.EventType != domain.AutomationEventTodo {
+	if trigger == nil || !trigger.Enabled || !automationTriggerHasEvent(trigger, domain.AutomationEventTodoReminder) {
 		return cancel()
 	}
 	note, err := s.notes.GetByID(ctx, job.NoteID, job.UID)
@@ -231,7 +231,7 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	if err != nil {
 		return s.retry(ctx, job, token, now, err)
 	}
-	if note == nil || note.IsDeleted() || !strings.HasSuffix(strings.ToLower(note.Path), ".md") || (trigger.VaultID != 0 && trigger.VaultID != note.VaultID) || !automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodo, UID: job.UID, VaultID: note.VaultID, Path: note.Path, Content: note.Content}) {
+	if note == nil || note.IsDeleted() || !strings.HasSuffix(strings.ToLower(note.Path), ".md") || !automationTriggerMatches(trigger, &domain.AutomationEvent{Type: domain.AutomationEventTodoReminder, UID: job.UID, VaultID: note.VaultID, Path: note.Path, Content: note.Content}) {
 		return cancel()
 	}
 	vault, err := s.vaults.GetByID(ctx, note.VaultID, job.UID)

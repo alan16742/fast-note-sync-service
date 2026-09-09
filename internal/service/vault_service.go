@@ -337,17 +337,7 @@ func (s *vaultService) Delete(ctx context.Context, uid int64, id int64) error {
 		s.logger.Warn("failed to cleanup shares when deleting vault", zap.Int64("vaultID", id), zap.Error(err))
 	}
 
-	// 9. 禁用 Git 同步
-	if err := s.gitRepo.DisableByVaultID(ctx, id, uid); err != nil {
-		s.logger.Warn("failed to disable git sync when deleting vault", zap.Int64("vaultID", id), zap.Error(err))
-	}
-
-	// 10. 禁用备份任务
-	if err := s.backupRepo.DisableByVaultID(ctx, id, uid); err != nil {
-		s.logger.Warn("failed to disable backup when deleting vault", zap.Int64("vaultID", id), zap.Error(err))
-	}
-
-	// 11. 清理配置
+	// 9. 清理配置
 	if err := s.settingRepo.DeleteByVaultID(ctx, id, uid); err != nil {
 		s.logger.Warn("failed to cleanup settings when deleting vault", zap.Int64("vaultID", id), zap.Error(err))
 	}

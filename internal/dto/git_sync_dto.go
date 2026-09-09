@@ -6,12 +6,10 @@ import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 // GitSyncConfigRequest git 仓库同步任务创建/更新请求
 type GitSyncConfigRequest struct {
 	ID              int64    `json:"id" form:"id"`
-	Vault           string   `json:"vault" form:"vault"` // Associated vault name // 关联笔记本名称
 	RepoURL         string   `json:"repoUrl" form:"repoUrl" binding:"required"`
 	Username        string   `json:"username" form:"username"`
 	Password        string   `json:"password" form:"password"`
 	Branch          string   `json:"branch" form:"branch"`
-	IsEnabled       bool     `json:"isEnabled" form:"isEnabled"`
 	RetentionDays   int64    `json:"retentionDays" form:"retentionDays"`
 	IncludeConfig   bool     `json:"includeConfig" form:"includeConfig"`
 	ConfigSyncRules []string `json:"configSyncRules" form:"configSyncRules"`
@@ -49,12 +47,10 @@ type GitSyncDeleteRequest struct {
 type GitSyncConfigDTO struct {
 	ID              int64      `json:"id"`              // Task ID // 任务ID
 	UID             int64      `json:"uid"`             // User ID // 用户ID
-	Vault           string     `json:"vault"`           // Associated vault name // 关联库名称
 	RepoURL         string     `json:"repoUrl"`         // Repository URL // 仓库地址
 	Username        string     `json:"username"`        // Username // 用户名
 	Password        string     `json:"password"`        // Password // 密码
 	Branch          string     `json:"branch"`          // Branch // 分支
-	IsEnabled       bool       `json:"isEnabled"`       // Is enabled // 是否启用
 	RetentionDays   int64      `json:"retentionDays"`   // History retention days // 历史记录保留天数
 	LastSyncTime    timex.Time `json:"lastSyncTime"`    // Last sync time // 上次同步时间
 	LastStatus      int64      `json:"lastStatus"`      // Last status (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown) // 上次状态 (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown)
@@ -78,6 +74,8 @@ type GitSyncHistoryRequest struct {
 type GitSyncHistoryDTO struct {
 	ID        int64      `json:"id"`
 	ConfigID  int64      `json:"configId"`
+	TriggerID int64      `json:"triggerId"`
+	VaultID   int64      `json:"vaultId"`
 	StartTime timex.Time `json:"startTime"`
 	EndTime   timex.Time `json:"endTime"`
 	Status    int64      `json:"status"` // 0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown

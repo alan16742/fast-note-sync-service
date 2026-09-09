@@ -118,23 +118,6 @@ func TestGitSyncHandler_Validate_Success(t *testing.T) {
 	mockSvc.AssertExpectations(t)
 }
 
-// TestGitSyncHandler_Execute_Success verifies manual trigger
-func TestGitSyncHandler_Execute_Success(t *testing.T) {
-	mockSvc := new(svcmocks.MockGitSyncService)
-
-	mockSvc.On("ExecuteSync", mock.Anything, int64(1), int64(1)).Return(nil)
-
-	handler := newTestGitSyncHandler(mockSvc)
-	body := `{"id":1}`
-	c, w := newGitSyncTestContext("POST", "/api/git-sync/config/execute", body, 1)
-
-	handler.Execute(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assertResponseCode(t, w, code.Success.Code())
-	mockSvc.AssertExpectations(t)
-}
-
 // TestGitSyncHandler_CleanWorkspace_Success verifies workspace clean
 func TestGitSyncHandler_CleanWorkspace_Success(t *testing.T) {
 	mockSvc := new(svcmocks.MockGitSyncService)

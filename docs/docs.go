@@ -1013,59 +1013,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/backup/execute": {
-            "post": {
-                "security": [
-                    {
-                        "UserAuthToken": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Backup"
-                ],
-                "summary": "Trigger a backup manually",
-                "parameters": [
-                    {
-                        "description": "Backup Execute Parameters",
-                        "name": "params",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/dto.BackupExecuteRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid Params",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "401": {
-                        "description": "Token Required",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    }
-                }
-            }
-        },
         "/api/backup/historys": {
             "get": {
                 "security": [
@@ -2295,62 +2242,6 @@ const docTemplate = `{
                         "required": true,
                         "schema": {
                             "$ref": "#/definitions/dto.GitSyncCleanRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid Params",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "401": {
-                        "description": "Token Required",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/app.Res"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/git-sync/config/execute": {
-            "post": {
-                "security": [
-                    {
-                        "UserAuthToken": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "GitSync"
-                ],
-                "summary": "Trigger a manual git sync",
-                "parameters": [
-                    {
-                        "description": "Execute Parameters",
-                        "name": "params",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/dto.GitSyncExecuteRequest"
                         }
                     }
                 ],
@@ -5939,10 +5830,6 @@ const docTemplate = `{
                     "description": "Whether sync path includes vault name // 同步路径是否包含仓库名",
                     "type": "boolean"
                 },
-                "isEnabled": {
-                    "description": "Is enabled // 是否启用",
-                    "type": "boolean"
-                },
                 "lastMessage": {
                     "description": "Last run result message // 上次运行结果消息",
                     "type": "string"
@@ -5982,18 +5869,13 @@ const docTemplate = `{
                 "updatedAt": {
                     "description": "Updated at // 更新时间",
                     "type": "string"
-                },
-                "vault": {
-                    "description": "Associated vault name // 关联库名称",
-                    "type": "string"
                 }
             }
         },
         "dto.BackupConfigRequest": {
             "type": "object",
             "required": [
-                "storageIds",
-                "type"
+                "storageIds"
             ],
             "properties": {
                 "id": {
@@ -6005,11 +5887,6 @@ const docTemplate = `{
                     "description": "Include vault name // 同步路径是否包含仓库名",
                     "type": "boolean",
                     "example": false
-                },
-                "isEnabled": {
-                    "description": "Is enabled // 是否启用",
-                    "type": "boolean",
-                    "example": true
                 },
                 "passwordMode": {
                     "description": "Password mode (0:None, 1:Fixed, 2:Random) // 密码模式 (0:无密码, 1:固定密码, 2:随机密码)",
@@ -6033,7 +5910,7 @@ const docTemplate = `{
                     "example": "[1, 2]"
                 },
                 "type": {
-                    "description": "Backup type // 备份类型",
+                    "description": "Backup mode // 备份模式",
                     "type": "string",
                     "enum": [
                         "full",
@@ -6041,21 +5918,6 @@ const docTemplate = `{
                         "sync"
                     ],
                     "example": "sync"
-                },
-                "vault": {
-                    "description": "Vault name // 仓库名称",
-                    "type": "string",
-                    "example": "test"
-                }
-            }
-        },
-        "dto.BackupExecuteRequest": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "description": "ID // ID",
-                    "type": "integer",
-                    "example": 1
                 }
             }
         },
@@ -6110,6 +5972,10 @@ const docTemplate = `{
                     "description": "Storage ID // 存储ID",
                     "type": "integer"
                 },
+                "triggerId": {
+                    "description": "Trigger ID // 触发器ID",
+                    "type": "integer"
+                },
                 "type": {
                     "description": "Backup type // 备份类型",
                     "type": "string"
@@ -6121,6 +5987,10 @@ const docTemplate = `{
                 "updatedAt": {
                     "description": "Updated at // 更新时间",
                     "type": "string"
+                },
+                "vaultId": {
+                    "description": "Vault ID // 笔记库ID",
+                    "type": "integer"
                 }
             }
         },
@@ -6433,10 +6303,6 @@ const docTemplate = `{
                     "description": "Include config sync // 是否开启配置同步",
                     "type": "boolean"
                 },
-                "isEnabled": {
-                    "description": "Is enabled // 是否启用",
-                    "type": "boolean"
-                },
                 "lastMessage": {
                     "description": "Last run result message // 上次运行结果消息",
                     "type": "string"
@@ -6472,10 +6338,6 @@ const docTemplate = `{
                 "username": {
                     "description": "Username // 用户名",
                     "type": "string"
-                },
-                "vault": {
-                    "description": "Associated vault name // 关联库名称",
-                    "type": "string"
                 }
             }
         },
@@ -6500,9 +6362,6 @@ const docTemplate = `{
                 "includeConfig": {
                     "type": "boolean"
                 },
-                "isEnabled": {
-                    "type": "boolean"
-                },
                 "password": {
                     "type": "string"
                 },
@@ -6514,25 +6373,10 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
-                },
-                "vault": {
-                    "description": "Associated vault name // 关联笔记本名称",
-                    "type": "string"
                 }
             }
         },
         "dto.GitSyncDeleteRequest": {
-            "type": "object",
-            "required": [
-                "id"
-            ],
-            "properties": {
-                "id": {
-                    "type": "integer"
-                }
-            }
-        },
-        "dto.GitSyncExecuteRequest": {
             "type": "object",
             "required": [
                 "id"
@@ -6566,6 +6410,12 @@ const docTemplate = `{
                 },
                 "status": {
                     "description": "0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown",
+                    "type": "integer"
+                },
+                "triggerId": {
+                    "type": "integer"
+                },
+                "vaultId": {
                     "type": "integer"
                 }
             }
@@ -6822,6 +6672,11 @@ const docTemplate = `{
                     "description": "Creation timestamp // 创建时间戳",
                     "type": "integer",
                     "example": 1700000000
+                },
+                "isConflictResolved": {
+                    "description": "Marks if conflict is resolved manually // 标记是否为手动解决冲突",
+                    "type": "boolean",
+                    "example": false
                 },
                 "mtime": {
                     "description": "Modification timestamp // 修改时间戳",

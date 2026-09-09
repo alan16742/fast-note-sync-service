@@ -46,7 +46,7 @@ func TestBackupHandler_GetConfigs_Success(t *testing.T) {
 	mockSvc := new(svcmocks.MockBackupService)
 
 	mockData := []*dto.BackupConfigDTO{
-		{ID: 1, Vault: "main"},
+		{ID: 1},
 	}
 
 	mockSvc.On("GetConfigs", mock.Anything, int64(1)).Return(mockData, nil)
@@ -66,15 +66,14 @@ func TestBackupHandler_UpdateConfig_Success(t *testing.T) {
 	mockSvc := new(svcmocks.MockBackupService)
 
 	mockData := &dto.BackupConfigDTO{
-		ID:    1,
-		Vault: "main",
+		ID: 1,
 	}
 
 	mockSvc.On("UpdateConfig", mock.Anything, int64(1), mock.AnythingOfType("*dto.BackupConfigRequest")).
 		Return(mockData, nil)
 
 	handler := newTestBackupHandler(mockSvc)
-	body := `{"id":1, "vault":"main", "type":"sync", "storageIds":"[1]", "cronStrategy":"daily"}`
+	body := `{"id":1, "type":"sync", "storageIds":"[1]"}`
 	c, w := newBackupTestContext("POST", "/api/backup/config", body, 1)
 
 	handler.UpdateConfig(c)
@@ -117,23 +116,6 @@ func TestBackupHandler_ListHistory_Success(t *testing.T) {
 	c, w := newBackupTestContext("GET", "/api/backup/histories?configId=1", "", 1)
 
 	handler.ListHistory(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assertResponseCode(t, w, code.Success.Code())
-	mockSvc.AssertExpectations(t)
-}
-
-// TestBackupHandler_Execute_Success verifies manual trigger backup execution
-func TestBackupHandler_Execute_Success(t *testing.T) {
-	mockSvc := new(svcmocks.MockBackupService)
-
-	mockSvc.On("ExecuteUserBackup", mock.Anything, int64(1), int64(1)).Return(nil)
-
-	handler := newTestBackupHandler(mockSvc)
-	body := `{"id":1}`
-	c, w := newBackupTestContext("POST", "/api/backup/execute", body, 1)
-
-	handler.Execute(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assertResponseCode(t, w, code.Success.Code())

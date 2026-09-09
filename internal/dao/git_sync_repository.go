@@ -62,6 +62,8 @@ func (r *gitSyncRepository) historyToDomain(m *model.GitSyncHistory) *domain.Git
 		ID:        m.ID,
 		UID:       m.UID,
 		ConfigID:  m.ConfigID,
+		TriggerID: m.TriggerID,
+		VaultID:   m.VaultID,
 		StartTime: m.StartTime,
 		EndTime:   m.EndTime,
 		Status:    m.Status,
@@ -79,6 +81,8 @@ func (r *gitSyncRepository) historyToModel(d *domain.GitSyncHistory) *model.GitS
 		ID:        d.ID,
 		UID:       d.UID,
 		ConfigID:  d.ConfigID,
+		TriggerID: d.TriggerID,
+		VaultID:   d.VaultID,
 		StartTime: d.StartTime,
 		EndTime:   d.EndTime,
 		Status:    d.Status,
@@ -143,7 +147,6 @@ func (r *gitSyncRepository) toDomain(m *model.GitSyncConfig) *domain.GitSyncConf
 		Username:      m.Username,
 		Password:      m.Password,
 		Branch:        m.Branch,
-		IsEnabled:     m.IsEnabled == 1,
 		RetentionDays: m.RetentionDays,
 		LastSyncTime:  lastSyncTime,
 		LastStatus:    m.LastStatus,
@@ -163,10 +166,6 @@ func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfi
 	if d == nil {
 		return nil
 	}
-	isEnabled := int64(0)
-	if d.IsEnabled {
-		isEnabled = 1
-	}
 	var lastSyncTime time.Time
 	if d.LastSyncTime != nil {
 		lastSyncTime = *d.LastSyncTime
@@ -179,7 +178,6 @@ func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfi
 		Username:      d.Username,
 		Password:      d.Password,
 		Branch:        d.Branch,
-		IsEnabled:     isEnabled,
 		RetentionDays: d.RetentionDays,
 		LastSyncTime:  lastSyncTime,
 		LastStatus:    d.LastStatus,
@@ -307,15 +305,6 @@ func (r *gitSyncRepository) DeleteOldHistory(ctx context.Context, uid int64, con
 			query = query.Where(q.ConfigID.Eq(configID))
 		}
 		_, err := query.Delete()
-		return err
-	})
-}
-
-// DisableByVaultID 禁用仓库下的 Git 同步任务
-func (r *gitSyncRepository) DisableByVaultID(ctx context.Context, vaultID, uid int64) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		q := r.gitSync(uid).GitSyncConfig
-		_, err := q.WithContext(ctx).Where(q.VaultID.Eq(vaultID), q.UID.Eq(uid)).UpdateSimple(q.IsEnabled.Value(0))
 		return err
 	})
 }

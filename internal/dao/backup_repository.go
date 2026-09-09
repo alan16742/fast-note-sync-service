@@ -57,7 +57,6 @@ func (r *backupRepository) configToDomain(m *model.BackupConfig) *domain.BackupC
 		VaultID:          m.VaultID,
 		Type:             m.Type,
 		StorageIds:       m.StorageIds,
-		IsEnabled:        m.IsEnabled == 1,
 		IncludeVaultName: m.IncludeVaultName == 1,
 		RetentionDays:    int(m.RetentionDays),
 		LastRunTime:      m.LastRunTime,
@@ -74,10 +73,6 @@ func (r *backupRepository) configToModel(d *domain.BackupConfig) *model.BackupCo
 	if d == nil {
 		return nil
 	}
-	isEnabled := int64(0)
-	if d.IsEnabled {
-		isEnabled = 1
-	}
 	includeVaultName := int64(0)
 	if d.IncludeVaultName {
 		includeVaultName = 1
@@ -88,7 +83,6 @@ func (r *backupRepository) configToModel(d *domain.BackupConfig) *model.BackupCo
 		VaultID:          d.VaultID,
 		Type:             d.Type,
 		StorageIds:       d.StorageIds,
-		IsEnabled:        isEnabled,
 		IncludeVaultName: includeVaultName,
 		RetentionDays:    int64(d.RetentionDays),
 		LastRunTime:      d.LastRunTime,
@@ -109,6 +103,8 @@ func (r *backupRepository) historyToDomain(m *model.BackupHistory) *domain.Backu
 		ID:        m.ID,
 		UID:       m.UID,
 		ConfigID:  m.ConfigID,
+		TriggerID: m.TriggerID,
+		VaultID:   m.VaultID,
 		StorageID: m.StorageID,
 		Type:      m.Type,
 		StartTime: m.StartTime,
@@ -132,6 +128,8 @@ func (r *backupRepository) historyToModel(d *domain.BackupHistory) *model.Backup
 		ID:        d.ID,
 		UID:       d.UID,
 		ConfigID:  d.ConfigID,
+		TriggerID: d.TriggerID,
+		VaultID:   d.VaultID,
 		StorageID: d.StorageID,
 		Type:      d.Type,
 		StartTime: d.StartTime,
@@ -275,11 +273,23 @@ func (r *backupRepository) DeleteOldHistory(ctx context.Context, uid int64, conf
 	})
 }
 
-// DisableByVaultID 禁用仓库下的备份任务
-func (r *backupRepository) DisableByVaultID(ctx context.Context, vaultID, uid int64) error {
+func (r *backupRepository) ListOldHistoryForStorage(ctx context.Context, uid, configID, storageID int64, cutoffTime time.Time) ([]*domain.BackupHistory, error) {
+	q := r.backup(uid).BackupHistory
+	items, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.ConfigID.Eq(configID), q.StorageID.Eq(storageID), q.CreatedAt.Lt(timex.Time(cutoffTime))).Find()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*domain.BackupHistory, 0, len(items))
+	for _, item := range items {
+		result = append(result, r.historyToDomain(item))
+	}
+	return result, nil
+}
+
+func (r *backupRepository) DeleteOldHistoryForStorage(ctx context.Context, uid, configID, storageID int64, cutoffTime time.Time) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		q := r.backup(uid).BackupConfig
-		_, err := q.WithContext(ctx).Where(q.VaultID.Eq(vaultID), q.UID.Eq(uid)).UpdateSimple(q.IsEnabled.Value(0))
+		q := r.backup(uid).BackupHistory
+		_, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.ConfigID.Eq(configID), q.StorageID.Eq(storageID), q.CreatedAt.Lt(timex.Time(cutoffTime))).Delete()
 		return err
 	})
 }

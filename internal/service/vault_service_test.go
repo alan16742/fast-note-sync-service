@@ -167,8 +167,6 @@ func TestVaultService_Delete_Success(t *testing.T) {
 	linkRepo.On("DeleteByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
 	ftsRepo.On("DeleteByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
 	shareRepo.On("DeleteByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
-	gitRepo.On("DisableByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
-	backupRepo.On("DisableByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
 	settingRepo.On("DeleteByVaultID", mock.Anything, int64(3), int64(1)).Return(nil)
 	mockRepo.On("Delete", mock.Anything, int64(3), int64(1)).
 		Return(nil)

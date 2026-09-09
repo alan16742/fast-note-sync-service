@@ -131,7 +131,6 @@ func (s *storageService) CreateOrUpdate(ctx context.Context, uid int64, id int64
 	if !s.isStorageTypeEnabled(typeName) {
 		return nil, code.ErrorStorageTypeDisabled
 	}
-
 	storage := s.postRequestToDomain(req)
 	storage.UID = uid
 

@@ -114,7 +114,8 @@ func PostJSON(ctx context.Context, client *http.Client, endpoint string, payload
 }
 
 // SendMessage delivers the common notification payload through a user-defined
-// HTTP endpoint. GET encodes the payload as query parameters; POST sends JSON.
+// HTTP endpoint. POST sends the rendered body as-is and GET leaves the URL
+// query untouched; the user controls the wire format through headers/templates.
 // Unlike provider-specific APIs, any 2xx response is considered successful.
 func SendMessage(ctx context.Context, client *http.Client, method, endpoint string, headers map[string]string, message Message) error {
 	method = strings.ToUpper(strings.TrimSpace(method))
@@ -122,38 +123,9 @@ func SendMessage(ctx context.Context, client *http.Client, method, endpoint stri
 		return errors.New("custom webhook method must be GET or POST")
 	}
 	client = HTTPClient(client)
-	payload := struct {
-		Title string `json:"title,omitempty"`
-		Body  string `json:"body,omitempty"`
-		Short string `json:"short,omitempty"`
-		Tags  string `json:"tags,omitempty"`
-		Group string `json:"group,omitempty"`
-		URL   string `json:"url,omitempty"`
-		Level string `json:"level,omitempty"`
-	}{message.Title, message.Body, message.Short, message.Tags, message.Group, message.URL, message.Level}
-
 	var body io.Reader
-	if method == http.MethodGet {
-		parsed, err := url.Parse(endpoint)
-		if err != nil || parsed.Host == "" {
-			return errors.New("invalid notification request")
-		}
-		query := parsed.Query()
-		query.Set("title", message.Title)
-		query.Set("body", message.Body)
-		query.Set("short", message.Short)
-		query.Set("tags", message.Tags)
-		query.Set("group", message.Group)
-		query.Set("url", message.URL)
-		query.Set("level", message.Level)
-		parsed.RawQuery = query.Encode()
-		endpoint = parsed.String()
-	} else {
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("encode notification: %w", err)
-		}
-		body = bytes.NewReader(encoded)
+	if method == http.MethodPost {
+		body = strings.NewReader(message.Body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
@@ -161,9 +133,6 @@ func SendMessage(ctx context.Context, client *http.Client, method, endpoint stri
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
-	}
-	if method == http.MethodPost && req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
 	}
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", "fast-note-sync-service-notification/1")

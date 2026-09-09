@@ -17,6 +17,8 @@ type GitSyncHistory struct {
 	ID        int64      `gorm:"column:id;primaryKey" json:"id" form:"id"`
 	UID       int64      `gorm:"column:uid;not null;index:idx_git_sync_history_uid,priority:1;default:0" json:"uid" form:"uid"`
 	ConfigID  int64      `gorm:"column:config_id;not null;index:idx_git_sync_history_config_id,priority:1;default:0" json:"configId" form:"configId"`
+	TriggerID int64      `gorm:"column:trigger_id;not null;index:idx_git_sync_history_trigger_id;default:0" json:"triggerId" form:"triggerId"`
+	VaultID   int64      `gorm:"column:vault_id;not null;index:idx_git_sync_history_vault_id;default:0" json:"vaultId" form:"vaultId"`
 	StartTime time.Time  `gorm:"column:start_time" json:"startTime" form:"startTime"`
 	EndTime   time.Time  `gorm:"column:end_time" json:"endTime" form:"endTime"`
 	Status    int64      `gorm:"column:status;default:0" json:"status" form:"status"`

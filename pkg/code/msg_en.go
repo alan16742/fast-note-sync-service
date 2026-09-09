@@ -118,7 +118,6 @@ var en_messages = map[int]string{
 	496: "Sync & backup task ID is required",
 	497: "Note repository ID is required",
 	498: "Invalid storage ID list in sync & backup task settings",
-	499: "Sync & backup task is disabled",
 	500: "Storage configuration does not exist",
 	501: "This storage type has been disabled",
 	502: "Storage connection test failed",

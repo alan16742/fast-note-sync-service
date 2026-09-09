@@ -153,42 +153,6 @@ func (h *GitSyncHandler) Validate(c *gin.Context) {
 	response.ToResponse(code.Success.WithDetails("Validation successful"))
 }
 
-// Execute manual sync task
-// @Summary Trigger a manual git sync
-// @Tags GitSync
-// @Security UserAuthToken
-// @Accept json
-// @Produce json
-// @Param params body dto.GitSyncExecuteRequest true "Execute Parameters"
-// @Success 200 {object} pkgapp.Res "Success"
-// @Failure 400 {object} pkgapp.Res "Invalid Params"
-// @Failure 401 {object} pkgapp.Res "Token Required"
-// @Failure 500 {object} pkgapp.Res "Internal Server Error"
-// @Router /api/git-sync/config/execute [post]
-func (h *GitSyncHandler) Execute(c *gin.Context) {
-	response := pkgapp.NewResponse(c)
-	params := &dto.GitSyncExecuteRequest{}
-	if valid, errs := pkgapp.BindAndValid(c, params); !valid {
-		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
-		return
-	}
-
-	uid := pkgapp.GetUID(c)
-	if uid == 0 {
-		response.ToResponse(code.ErrorNotUserAuthToken)
-		return
-	}
-
-	err := h.App.GitSyncService.ExecuteSync(c.Request.Context(), uid, params.ID)
-	if err != nil {
-		h.logError(c.Request.Context(), "GitSyncHandler.Execute", err)
-		apperrors.ErrorResponse(c, err)
-		return
-	}
-
-	response.ToResponse(code.Success.WithDetails("Sync started in background"))
-}
-
 // CleanWorkspace cleans local git workspace
 // @Summary Clean local git workspace
 // @Tags GitSync

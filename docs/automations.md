@@ -1,33 +1,39 @@
-# 自动化触发器
+# 自动化规则
 
-自动化由两部分组成：事件和触发器。事件只描述“发生了什么”，触发器保存匹配条件以及要执行的目标。Git 仓库账号、备份存储和通知渠道等敏感配置仍保存在各自的配置中，触发器只保存目标类型和配置 ID。
+自动化规则由一个笔记库范围、一个公共时区、多个事件分支和多个执行目标组成。事件分支可以选择 AND 或 OR 关系；AND 模式要求所有分支属于同一种事件类型并同时匹配。
 
-## 事件类型
+## 事件分支
 
-- `time`：按五段 Cron 表达式和 IANA 时区触发。
-- `content`：笔记创建、修改、删除、重命名、恢复或彻底删除事件，可按正文、库、路径和行为筛选。
-- `todo`：扫描笔记正文中的 Markdown 待办和 `@(时间; 参数)` 注释，使用触发器时区排程；可按库、路径和正文筛选，只能连接通知渠道。
-- `file`：附件或目录的创建、修改、删除、重命名、恢复或彻底删除事件，可按库、路径和行为筛选。
-- `manual`：通过 WebGUI 的“手动运行”按钮或 API 触发。
+- `cron`：按 Cron 表达式触发，使用规则公共时区。
+- `note_content`：匹配笔记正文以及笔记行为。
+- `file_behavior`：匹配路径前缀、路径 Glob 以及文件/目录行为。
+- `todo_reminder`：使用专用 Markdown 待办解析器，仅连接通知渠道；规则只提供公共时区。
+- `manual`：通过 WebGUI 的手动触发按钮或 API 运行。
 
-事件发布不会让原始的笔记/文件写入等待目标执行。目标执行进入共享 Worker Pool；一个触发器可以绑定多个目标，也可以让多个触发器复用同一个 Git、备份或通知配置。
+每条规则必须选择一个笔记库。备份和 Git 配置不保存笔记库，而是接收触发器传入的执行上下文。同一个目标可以被多个笔记库复用，保存时会提示潜在的存储路径、Git 分支或远端冲突。
 
 ## API
 
-以下接口位于 WebGUI 认证路由下：
+- `GET /api/automations`：列出当前用户的规则。
+- `POST /api/automations`、`PUT /api/automations`：创建或更新规则。
+- `DELETE /api/automations?id=<id>`：删除规则。
+- `POST /api/automations/trigger`，请求体 `{ "id": 1 }`：运行包含 `manual` 分支的规则。
 
-- `GET /api/automations`：列出当前用户的触发器。
-- `POST /api/automations`、`PUT /api/automations`：创建或更新触发器。
-- `DELETE /api/automations?id=<id>`：删除触发器。
-- `POST /api/automations/trigger`，请求体 `{ "id": 1, "vaultId": 0 }`：运行一个 `manual` 触发器。
-
-保存请求的 `actions` 示例：
+示例：
 
 ```json
-[
-  {"type": "git", "configId": 3},
-  {"type": "webhook", "configId": 8}
-]
+{
+  "name": "项目变化同步",
+  "enabled": true,
+  "vaultId": 3,
+  "timezone": "Asia/Shanghai",
+  "matchMode": "any",
+  "events": [
+    {"type": "note_content", "contentContains": "发布", "eventActions": ["modify"]},
+    {"type": "file_behavior", "pathGlob": "Projects/*.md", "eventActions": ["create", "modify"]}
+  ],
+  "actions": [{"type": "git", "configId": 4}]
+}
 ```
 
-Git、备份、存储和通知渠道配置只保存各自的执行参数与凭据；它们不会自行订阅笔记/文件事件。自动化规则是唯一的事件到目标连接层，时间、内容、手动、文件和待办触发器都通过绑定的配置 ID 调用对应执行器。
+备份任务保存自己的存储选择和备份策略；存储配置只保存连接与路径参数。Git 和通知渠道也只保存各自的执行参数与凭据，它们不会自行订阅事件。自动化规则是事件到目标的唯一连接层。

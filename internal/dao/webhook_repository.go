@@ -56,7 +56,7 @@ func webhookToDomain(item *model.WebhookSubscription) (*domain.WebhookSubscripti
 		}
 	}
 	return &domain.WebhookSubscription{
-		ID: item.ID, UID: item.UID, Enabled: item.Enabled == 1, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: headers, Secret: item.Secret,
+		ID: item.ID, UID: item.UID, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: headers, Secret: item.Secret,
 		TitleTemplate: item.TitleTemplate, BodyTemplate: item.BodyTemplate,
 		CreatedAt: time.Time(item.CreatedAt), UpdatedAt: time.Time(item.UpdatedAt),
 	}, nil
@@ -70,12 +70,8 @@ func webhookToModel(item *domain.WebhookSubscription) (*model.WebhookSubscriptio
 	if err != nil {
 		return nil, err
 	}
-	enabled := int64(0)
-	if item.Enabled {
-		enabled = 1
-	}
 	return &model.WebhookSubscription{
-		ID: item.ID, UID: item.UID, Enabled: enabled, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: string(headers), Secret: item.Secret,
+		ID: item.ID, UID: item.UID, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: string(headers), Secret: item.Secret,
 		TitleTemplate: item.TitleTemplate, BodyTemplate: item.BodyTemplate,
 		CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
 	}, nil

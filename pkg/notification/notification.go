@@ -10,6 +10,9 @@ type Message struct {
 	Group string
 	URL   string
 	Level string
+	// Endpoint is an optional rendered delivery endpoint for custom webhooks.
+	// URL remains the notification link, not the delivery endpoint.
+	Endpoint string
 }
 
 type Sender interface {

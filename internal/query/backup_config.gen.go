@@ -33,7 +33,6 @@ func newBackupConfig(db *gorm.DB, opts ...gen.DOOption) backupConfig {
 	_backupConfig.VaultID = field.NewInt64(tableName, "vault_id")
 	_backupConfig.Type = field.NewString(tableName, "type")
 	_backupConfig.StorageIds = field.NewString(tableName, "storage_ids")
-	_backupConfig.IsEnabled = field.NewInt64(tableName, "is_enabled")
 	_backupConfig.IncludeVaultName = field.NewInt64(tableName, "include_vault_name")
 	_backupConfig.RetentionDays = field.NewInt64(tableName, "retention_days")
 	_backupConfig.LastRunTime = field.NewTime(tableName, "last_run_time")
@@ -58,7 +57,6 @@ type backupConfig struct {
 	VaultID          field.Int64
 	Type             field.String
 	StorageIds       field.String
-	IsEnabled        field.Int64
 	IncludeVaultName field.Int64
 	RetentionDays    field.Int64
 	LastRunTime      field.Time
@@ -89,7 +87,6 @@ func (b *backupConfig) updateTableName(table string) *backupConfig {
 	b.VaultID = field.NewInt64(table, "vault_id")
 	b.Type = field.NewString(table, "type")
 	b.StorageIds = field.NewString(table, "storage_ids")
-	b.IsEnabled = field.NewInt64(table, "is_enabled")
 	b.IncludeVaultName = field.NewInt64(table, "include_vault_name")
 	b.RetentionDays = field.NewInt64(table, "retention_days")
 	b.LastRunTime = field.NewTime(table, "last_run_time")
@@ -133,7 +130,6 @@ func (b *backupConfig) fillFieldMap() {
 	b.fieldMap["vault_id"] = b.VaultID
 	b.fieldMap["type"] = b.Type
 	b.fieldMap["storage_ids"] = b.StorageIds
-	b.fieldMap["is_enabled"] = b.IsEnabled
 	b.fieldMap["include_vault_name"] = b.IncludeVaultName
 	b.fieldMap["retention_days"] = b.RetentionDays
 	b.fieldMap["last_run_time"] = b.LastRunTime

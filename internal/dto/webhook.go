@@ -3,7 +3,6 @@ package dto
 // WebhookSubscriptionRequest creates or updates a user's webhook subscription.
 type WebhookSubscriptionRequest struct {
 	ID            int64             `json:"id" form:"id"`
-	Enabled       bool              `json:"enabled" form:"enabled"`
 	Provider      string            `json:"provider" form:"provider"`
 	URL           string            `json:"url" form:"url"`
 	Method        string            `json:"method" form:"method"`
@@ -17,7 +16,6 @@ type WebhookSubscriptionRequest struct {
 type WebhookSubscriptionDTO struct {
 	ID            int64             `json:"id"`
 	UID           int64             `json:"uid"`
-	Enabled       bool              `json:"enabled"`
 	Provider      string            `json:"provider"`
 	URL           string            `json:"url"`
 	Method        string            `json:"method"`

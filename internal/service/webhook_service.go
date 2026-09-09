@@ -110,7 +110,7 @@ func (s *webhookService) Save(ctx context.Context, uid int64, request *dto.Webho
 	}
 	request = &value
 	item, err := s.repo.Save(ctx, &domain.WebhookSubscription{
-		ID: request.ID, UID: uid, Enabled: request.Enabled, Provider: request.Provider, URL: strings.TrimSpace(request.URL), Method: request.Method, Headers: request.Headers, Secret: secret,
+		ID: request.ID, UID: uid, Provider: request.Provider, URL: strings.TrimSpace(request.URL), Method: request.Method, Headers: request.Headers, Secret: secret,
 		TitleTemplate: request.TitleTemplate, BodyTemplate: request.BodyTemplate,
 	}, uid)
 	if err != nil {
@@ -143,9 +143,6 @@ func (s *webhookService) DeliverEvent(ctx context.Context, uid, id int64, event 
 	if subscription == nil {
 		return errors.New("webhook subscription not found")
 	}
-	if !subscription.Enabled {
-		return errors.New("webhook subscription is disabled")
-	}
 	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
 	if sender == nil {
 		return fmt.Errorf("unsupported webhook provider: %s", subscription.Provider)
@@ -169,9 +166,6 @@ func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, tit
 	if subscription == nil {
 		return errors.New("webhook subscription not found")
 	}
-	if !subscription.Enabled {
-		return errors.New("webhook subscription is disabled")
-	}
 	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
 	if sender == nil {
 		return fmt.Errorf("unsupported webhook provider: %s", subscription.Provider)
@@ -181,9 +175,7 @@ func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, tit
 	return sendNotification(sendCtx, sender, subscription, messageForReminder(subscription, title, due, timezone, vault, path, content, link))
 }
 
-// Test sends a synthetic message through a saved subscription. It intentionally
-// does not require the channel to be enabled: this lets a user validate a new
-// credential before turning the channel on.
+// Test sends a synthetic message through a saved subscription.
 func (s *webhookService) Test(ctx context.Context, uid, id int64) error {
 	if id <= 0 {
 		return errors.New("webhook subscription id is required")
@@ -244,7 +236,7 @@ func (s *webhookService) TestRequest(ctx context.Context, uid int64, request *dt
 		return err
 	}
 	subscription := &domain.WebhookSubscription{
-		ID: value.ID, UID: uid, Enabled: value.Enabled, Provider: value.Provider, URL: value.URL, Method: value.Method, Headers: value.Headers, Secret: value.Secret,
+		ID: value.ID, UID: uid, Provider: value.Provider, URL: value.URL, Method: value.Method, Headers: value.Headers, Secret: value.Secret,
 		TitleTemplate: value.TitleTemplate, BodyTemplate: value.BodyTemplate,
 	}
 	sender := s.senders[normalizeWebhookProvider(subscription.Provider)]
@@ -405,5 +397,5 @@ func webhookToDTO(item *domain.WebhookSubscription) *dto.WebhookSubscriptionDTO 
 	}
 	titleTemplate, bodyTemplate := notificationTemplates(item, false)
 	headers := normalizeWebhookHeaders(item.Headers)
-	return &dto.WebhookSubscriptionDTO{ID: item.ID, UID: item.UID, Enabled: item.Enabled, Provider: normalizeWebhookProvider(item.Provider), URL: item.URL, Method: normalizeWebhookMethod(item.Method), Headers: headers, HasSecret: item.Secret != "", TitleTemplate: titleTemplate, BodyTemplate: bodyTemplate, CreatedAt: timex.Time(item.CreatedAt).String(), UpdatedAt: timex.Time(item.UpdatedAt).String()}
+	return &dto.WebhookSubscriptionDTO{ID: item.ID, UID: item.UID, Provider: normalizeWebhookProvider(item.Provider), URL: item.URL, Method: normalizeWebhookMethod(item.Method), Headers: headers, HasSecret: item.Secret != "", TitleTemplate: titleTemplate, BodyTemplate: bodyTemplate, CreatedAt: timex.Time(item.CreatedAt).String(), UpdatedAt: timex.Time(item.UpdatedAt).String()}
 }

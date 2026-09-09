@@ -5,6 +5,7 @@ package mocks
 import (
 	"context"
 
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -55,8 +56,8 @@ func (m *MockGitSyncService) Validate(ctx context.Context, params *dto.GitSyncVa
 	return args.Error(0)
 }
 
-func (m *MockGitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) error {
-	args := m.Called(ctx, uid, id)
+func (m *MockGitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, execution *domain.AutomationExecutionContext) error {
+	args := m.Called(ctx, uid, id, execution)
 	return args.Error(0)
 }
 

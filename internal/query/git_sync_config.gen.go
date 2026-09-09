@@ -35,7 +35,6 @@ func newGitSyncConfig(db *gorm.DB, opts ...gen.DOOption) gitSyncConfig {
 	_gitSyncConfig.Username = field.NewString(tableName, "username")
 	_gitSyncConfig.Password = field.NewString(tableName, "password")
 	_gitSyncConfig.Branch = field.NewString(tableName, "branch")
-	_gitSyncConfig.IsEnabled = field.NewInt64(tableName, "is_enabled")
 	_gitSyncConfig.RetentionDays = field.NewInt64(tableName, "retention_days")
 	_gitSyncConfig.LastSyncTime = field.NewTime(tableName, "last_sync_time")
 	_gitSyncConfig.LastStatus = field.NewInt64(tableName, "last_status")
@@ -61,7 +60,6 @@ type gitSyncConfig struct {
 	Username        field.String
 	Password        field.String
 	Branch          field.String
-	IsEnabled       field.Int64
 	RetentionDays   field.Int64
 	LastSyncTime    field.Time
 	LastStatus      field.Int64
@@ -93,7 +91,6 @@ func (g *gitSyncConfig) updateTableName(table string) *gitSyncConfig {
 	g.Username = field.NewString(table, "username")
 	g.Password = field.NewString(table, "password")
 	g.Branch = field.NewString(table, "branch")
-	g.IsEnabled = field.NewInt64(table, "is_enabled")
 	g.RetentionDays = field.NewInt64(table, "retention_days")
 	g.LastSyncTime = field.NewTime(table, "last_sync_time")
 	g.LastStatus = field.NewInt64(table, "last_status")
@@ -138,7 +135,6 @@ func (g *gitSyncConfig) fillFieldMap() {
 	g.fieldMap["username"] = g.Username
 	g.fieldMap["password"] = g.Password
 	g.fieldMap["branch"] = g.Branch
-	g.fieldMap["is_enabled"] = g.IsEnabled
 	g.fieldMap["retention_days"] = g.RetentionDays
 	g.fieldMap["last_sync_time"] = g.LastSyncTime
 	g.fieldMap["last_status"] = g.LastStatus
