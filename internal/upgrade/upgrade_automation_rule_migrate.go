@@ -234,12 +234,16 @@ func (m *LegacyAutomationRuleMigrate) migrateGitSyncConfigs(mc *MigrationContext
 
 func legacySyncEvents() []domain.AutomationEventRule {
 	return []domain.AutomationEventRule{
-		{Type: domain.AutomationEventNoteContent, EventActions: legacyNotifyUpdatedActions},
+		{Type: domain.AutomationEventNoteContent},
 		{Type: domain.AutomationEventFileBehavior, EventActions: legacyNotifyUpdatedActions},
 	}
 }
 
 func legacyEventBranches(event domain.AutomationEventRule) []domain.AutomationEventRule {
+	if event.Type == domain.AutomationEventNoteContent {
+		event.EventActions = nil
+		return []domain.AutomationEventRule{event}
+	}
 	if len(event.EventActions) == 0 {
 		return []domain.AutomationEventRule{event}
 	}

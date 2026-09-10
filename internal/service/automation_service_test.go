@@ -11,7 +11,7 @@ func TestAutomationTriggerMatchesOrEventBranches(t *testing.T) {
 	trigger := &domain.AutomationTrigger{
 		Enabled: true, VaultID: 7,
 		Events: []domain.AutomationEventRule{
-			{Type: domain.AutomationEventNoteContent, ContentContains: "release", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "release"},
 			{Type: domain.AutomationEventFileBehavior, PathGlob: "Projects/*.md", EventActions: []string{"create"}},
 		},
 	}
@@ -44,12 +44,12 @@ func TestAutomationTriggerMatchesRenameByOldOrNewPath(t *testing.T) {
 	}
 }
 
-func TestAutomationTriggerMatchesAllBranchesAndNeverDefaultsActions(t *testing.T) {
+func TestAutomationTriggerMatchesAllBranchesAndRequiresFileActions(t *testing.T) {
 	trigger := &domain.AutomationTrigger{
 		Enabled: true, VaultID: 1, MatchMode: domain.AutomationMatchAll,
 		Events: []domain.AutomationEventRule{
-			{Type: domain.AutomationEventNoteContent, ContentContains: "release", EventActions: []string{"modify"}},
-			{Type: domain.AutomationEventNoteContent, ContentContains: "notes", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "release"},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "notes"},
 		},
 	}
 	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
@@ -62,11 +62,17 @@ func TestAutomationTriggerMatchesAllBranchesAndNeverDefaultsActions(t *testing.T
 	}) {
 		t.Fatal("all mode should require every branch")
 	}
-	if automationTriggerMatches(&domain.AutomationTrigger{
+	if !automationTriggerMatches(&domain.AutomationTrigger{
 		Enabled: true, VaultID: 1,
 		Events: []domain.AutomationEventRule{{Type: domain.AutomationEventNoteContent, ContentContains: "release"}},
 	}, &domain.AutomationEvent{Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release"}) {
-		t.Fatal("an empty action selection must not match every action")
+		t.Fatal("note content should match without an action selection")
+	}
+	if automationTriggerMatches(&domain.AutomationTrigger{
+		Enabled: true, VaultID: 1,
+		Events: []domain.AutomationEventRule{{Type: domain.AutomationEventFileBehavior, PathGlob: "*.md"}},
+	}, &domain.AutomationEvent{Type: domain.AutomationEventFileBehavior, VaultID: 1, Action: "modify", Path: "note.md"}) {
+		t.Fatal("file behavior should still require an action selection")
 	}
 }
 
@@ -118,8 +124,8 @@ func TestAutomationFromRequestRequiresExplicitActionsAndValidMatchMode(t *testin
 	if _, err := automationFromRequest(&dto.AutomationTriggerRequest{
 		Name: "all note conditions", Enabled: true, VaultID: 1, MatchMode: "all",
 		Events: []dto.AutomationEventRuleDTO{
-			{Type: domain.AutomationEventNoteContent, ContentContains: "a", EventActions: []string{"modify"}},
-			{Type: domain.AutomationEventNoteContent, ContentContains: "b", EventActions: []string{"modify"}},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "a"},
+			{Type: domain.AutomationEventNoteContent, ContentContains: "b"},
 		},
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
 	}, 1); err != nil {

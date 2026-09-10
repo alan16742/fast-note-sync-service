@@ -524,13 +524,6 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 			needsTimezone = true
 		case domain.AutomationEventNoteContent:
 			rule.ContentContains = strings.TrimSpace(item.ContentContains)
-			rule.EventActions, err = normalizeEventActions(item.EventActions)
-			if err != nil {
-				return nil, err
-			}
-			if len(rule.EventActions) == 0 {
-				return nil, errors.New("note content event requires at least one event action")
-			}
 		case domain.AutomationEventFileBehavior:
 			rule.PathPrefix = strings.TrimSpace(item.PathPrefix)
 			rule.PathGlob = strings.TrimSpace(item.PathGlob)
@@ -709,7 +702,7 @@ func automationEventRuleMatches(rule domain.AutomationEventRule, event *domain.A
 		if rule.ContentContains != "" && !strings.Contains(event.Content, rule.ContentContains) {
 			return false
 		}
-		return len(rule.EventActions) > 0 && containsString(rule.EventActions, event.Action)
+		return true
 	}
 	if rule.Type == domain.AutomationEventFileBehavior {
 		if len(rule.EventActions) == 0 || !containsString(rule.EventActions, event.Action) {
@@ -760,7 +753,11 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 	}
 	events := make([]dto.AutomationEventRuleDTO, 0, len(trigger.Events))
 	for _, event := range trigger.Events {
-		events = append(events, dto.AutomationEventRuleDTO{Type: event.Type, Schedule: event.Schedule, ContentContains: event.ContentContains, PathPrefix: event.PathPrefix, PathGlob: event.PathGlob, EventActions: append([]string(nil), event.EventActions...)})
+		var eventActions []string
+		if event.Type == domain.AutomationEventFileBehavior {
+			eventActions = append([]string(nil), event.EventActions...)
+		}
+		events = append(events, dto.AutomationEventRuleDTO{Type: event.Type, Schedule: event.Schedule, ContentContains: event.ContentContains, PathPrefix: event.PathPrefix, PathGlob: event.PathGlob, EventActions: eventActions})
 	}
 	result := &dto.AutomationTriggerDTO{
 		ID: trigger.ID, UID: trigger.UID, Name: trigger.Name, Enabled: trigger.Enabled,

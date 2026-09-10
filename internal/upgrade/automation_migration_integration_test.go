@@ -83,10 +83,9 @@ func TestAutomationMigrationPreservesBranchesAndRetries(t *testing.T) {
 		}
 	}
 	require.Equal(t, legacySyncEvents(), backupEvents)
-	require.Len(t, gitEvents, 2)
-	require.ElementsMatch(t, []string{"delete", "rename", "restore"}, gitEvents[0].EventActions)
-	require.Equal(t, domain.AutomationEventFileBehavior, gitEvents[1].Type)
-	require.ElementsMatch(t, legacyNotifyUpdatedActions, gitEvents[1].EventActions)
+	require.Len(t, gitEvents, 1)
+	require.Equal(t, domain.AutomationEventFileBehavior, gitEvents[0].Type)
+	require.ElementsMatch(t, legacyNotifyUpdatedActions, gitEvents[0].EventActions)
 	// Respect disabled rules on retry instead of recreating an enabled duplicate.
 	require.NoError(t, rulesDB.Model(&model.AutomationTrigger{}).Where("id = ?", rows[3].ID).Update("enabled", 0).Error)
 	require.NoError(t, migration.Up(db, ctx, mc))

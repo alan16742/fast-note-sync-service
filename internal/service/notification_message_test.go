@@ -30,6 +30,16 @@ func TestMessageForNoteEventRendersCustomTemplates(t *testing.T) {
 	assert.Equal(t, "vault|old.md|content|", message.Body)
 }
 
+func TestMessageForCustomWebhookDoesNotUseTitleTemplate(t *testing.T) {
+	message := messageForNoteEvent(&domain.ContentChangeEvent{Action: domain.WebhookActionModify, Path: "note.md", Content: "content"}, &domain.WebhookSubscription{
+		Provider:      domain.WebhookProviderCustom,
+		TitleTemplate: "should be ignored",
+		BodyTemplate:  "{{content}}",
+	})
+	assert.Empty(t, message.Title)
+	assert.Equal(t, "content", message.Body)
+}
+
 func TestMessageForNoteEventRendersEndpointTemplate(t *testing.T) {
 	message := messageForNoteEvent(&domain.ContentChangeEvent{Content: "a & b", Path: "note.md"}, &domain.WebhookSubscription{
 		URL: "https://example.com/hook?title={{content}}&path={{path}}",

@@ -67,7 +67,10 @@ func renderNotificationEndpoint(endpoint string, values map[string]string) strin
 func notificationTemplates(subscription *domain.WebhookSubscription, reminder bool) (string, string) {
 	title, body := defaultWebhookTemplates(reminder)
 	if subscription != nil {
-		if subscription.TitleTemplate != "" {
+		isCustom := strings.EqualFold(strings.TrimSpace(subscription.Provider), domain.WebhookProviderCustom)
+		if isCustom {
+			title = ""
+		} else if subscription.TitleTemplate != "" {
 			title = subscription.TitleTemplate
 		}
 		if subscription.BodyTemplate != "" {

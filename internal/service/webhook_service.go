@@ -80,6 +80,7 @@ func (s *webhookService) Save(ctx context.Context, uid int64, request *dto.Webho
 	if value.Provider == domain.WebhookProviderCustom {
 		value.Method = normalizeWebhookMethod(value.Method)
 		value.Headers = normalizeWebhookHeaders(value.Headers)
+		value.TitleTemplate = ""
 	} else {
 		value.Method = ""
 		value.Headers = nil
@@ -214,6 +215,7 @@ func (s *webhookService) TestRequest(ctx context.Context, uid int64, request *dt
 		value.Secret = ""
 		value.Method = normalizeWebhookMethod(value.Method)
 		value.Headers = normalizeWebhookHeaders(value.Headers)
+		value.TitleTemplate = ""
 	} else {
 		value.Method = ""
 		value.Headers = nil
