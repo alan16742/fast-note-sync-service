@@ -22,6 +22,7 @@ type SyncLogDTO struct {
 	ChangedFields string     `json:"changedFields"` // Changed fields // 变更字段
 	Path          string     `json:"path"`          // Resource path // 资源路径
 	PathHash      string     `json:"pathHash"`      // Resource path hash // 路径哈希
+	OldPath       string     `json:"oldPath"`       // Previous path, set on rename // 原路径，重命名时填写
 	Size          int64      `json:"size"`          // Size in bytes // 大小（字节）
 	ClientName    string     `json:"clientName"`    // Client name // 客户端名称
 	ClientType    string     `json:"clientType"`    // Client type // 客户端类型

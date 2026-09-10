@@ -29,6 +29,20 @@ const syncLogBatchMaxSize = 100
 // syncLogBatchFlushInterval 缓冲条目在被 flush 前等待的最长时间。
 const syncLogBatchFlushInterval = 500 * time.Millisecond
 
+// SyncLogOption customises a single sync log entry before it is queued.
+// SyncLogOption 在条目入队前定制单条同步日志。
+type SyncLogOption func(*domain.SyncLog)
+
+// WithOldPath records the resource's previous path on a rename entry, so
+// path-scoped file_behavior rules still match the source location.
+// WithOldPath 在重命名条目上记录资源原路径，使按路径限定的 file_behavior 规则仍能匹配
+// 原位置。
+func WithOldPath(oldPath string) SyncLogOption {
+	return func(entry *domain.SyncLog) {
+		entry.OldPath = oldPath
+	}
+}
+
 // SyncLogService defines the sync log business service interface
 // SyncLogService 定义同步日志业务服务接口
 type SyncLogService interface {
@@ -46,6 +60,7 @@ type SyncLogService interface {
 		clientName string,
 		clientVersion string,
 		size int64,
+		opts ...SyncLogOption,
 	)
 
 	// List retrieves sync logs with pagination
@@ -120,6 +135,7 @@ func (s *syncLogService) Log(
 	clientName string,
 	clientVersion string,
 	size int64,
+	opts ...SyncLogOption,
 ) {
 	entry := &domain.SyncLog{
 		UID:           uid,
@@ -135,6 +151,14 @@ func (s *syncLogService) Log(
 		ClientVersion: clientVersion,
 		Status:        1, // success // 成功
 		CreatedAt:     timex.Now(),
+	}
+	// Options must be applied before publishing so the derived automation event
+	// observes the same fields as the persisted entry.
+	// 选项必须在发布前应用，确保派生的自动化事件与落库条目字段一致。
+	for _, opt := range opts {
+		if opt != nil {
+			opt(entry)
+		}
 	}
 	if s.automationPublisher != nil && (logType == domain.SyncLogTypeFile || logType == domain.SyncLogTypeFolder) {
 		s.automationPublisher.Publish(context.Background(), automationEventFromSyncLog(entry))
@@ -264,6 +288,7 @@ func (s *syncLogService) domainToDTO(l *domain.SyncLog) *dto.SyncLogDTO {
 		ChangedFields: l.ChangedFields,
 		Path:          l.Path,
 		PathHash:      l.PathHash,
+		OldPath:       l.OldPath,
 		Size:          l.Size,
 		ClientName:    l.ClientName,
 		ClientType:    l.ClientType,

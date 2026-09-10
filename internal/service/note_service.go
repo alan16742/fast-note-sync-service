@@ -737,8 +737,10 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 		}
 
 		// Log rename // 记录重命名日志
+		// Carry the source path so the log reflects the move faithfully.
+		// 带上源路径，使日志如实反映这次移动。
 		if s.syncLogService != nil {
-			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionRename, "path", newNoteCreated.Path, newNoteCreated.PathHash, s.clientType, s.clientName, s.clientVer, newNoteCreated.Size)
+			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionRename, "path", newNoteCreated.Path, newNoteCreated.PathHash, s.clientType, s.clientName, s.clientVer, newNoteCreated.Size, WithOldPath(oldPath))
 		}
 
 		go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{newNoteCreated.ID}, nil)

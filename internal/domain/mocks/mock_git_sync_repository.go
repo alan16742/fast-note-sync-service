@@ -24,14 +24,6 @@ func (m *MockGitSyncRepository) GetByID(ctx context.Context, id, uid int64) (*do
 	return args.Get(0).(*domain.GitSyncConfig), args.Error(1)
 }
 
-func (m *MockGitSyncRepository) GetByVaultID(ctx context.Context, vaultID, uid int64) (*domain.GitSyncConfig, error) {
-	args := m.Called(ctx, vaultID, uid)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*domain.GitSyncConfig), args.Error(1)
-}
-
 func (m *MockGitSyncRepository) Save(ctx context.Context, config *domain.GitSyncConfig, uid int64) (*domain.GitSyncConfig, error) {
 	args := m.Called(ctx, config, uid)
 	if args.Get(0) == nil {
@@ -47,14 +39,6 @@ func (m *MockGitSyncRepository) Delete(ctx context.Context, id, uid int64) error
 
 func (m *MockGitSyncRepository) List(ctx context.Context, uid int64) ([]*domain.GitSyncConfig, error) {
 	args := m.Called(ctx, uid)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]*domain.GitSyncConfig), args.Error(1)
-}
-
-func (m *MockGitSyncRepository) ListByVaultID(ctx context.Context, vaultID, uid int64) ([]*domain.GitSyncConfig, error) {
-	args := m.Called(ctx, vaultID, uid)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

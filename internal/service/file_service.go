@@ -866,8 +866,10 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 		}
 
 		// Log rename // 记录重命名日志
+		// Carry the source path so rules scoped to the old location still match.
+		// 带上源路径，使限定原位置的规则仍能匹配。
 		if s.syncLogService != nil {
-			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFile, domain.SyncLogActionRename, "path", newFileCreated.Path, newFileCreated.PathHash, s.clientType, s.clientName, s.clientVer, newFileCreated.Size)
+			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFile, domain.SyncLogActionRename, "path", newFileCreated.Path, newFileCreated.PathHash, s.clientType, s.clientName, s.clientVer, newFileCreated.Size, WithOldPath(oldPath))
 		}
 
 		// 修正目录FID

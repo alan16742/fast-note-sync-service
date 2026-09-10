@@ -45,7 +45,7 @@ func TestConflictService_CreateConflictFile_PersistsSyncableCopy(t *testing.T) {
 		}).
 		Return(&domain.Note{ID: 99}, nil)
 
-	svc := NewConflictService(noteRepo, vaultSvc, zap.NewNop())
+	svc := NewConflictService(noteRepo, vaultSvc, nil, nil, zap.NewNop())
 
 	req := &dto.ConflictFileRequest{
 		Vault:             "MyVault",

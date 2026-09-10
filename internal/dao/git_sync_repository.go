@@ -209,18 +209,6 @@ func (r *gitSyncRepository) GetByID(ctx context.Context, id, uid int64) (*domain
 	return r.toDomain(m), nil
 }
 
-func (r *gitSyncRepository) GetByVaultID(ctx context.Context, vaultID, uid int64) (*domain.GitSyncConfig, error) {
-	q := r.gitSync(uid).GitSyncConfig
-	m, err := q.WithContext(ctx).Where(q.VaultID.Eq(vaultID), q.UID.Eq(uid)).First()
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return r.toDomain(m), nil
-}
-
 func (r *gitSyncRepository) Save(ctx context.Context, config *domain.GitSyncConfig, uid int64) (*domain.GitSyncConfig, error) {
 	var result *domain.GitSyncConfig
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
@@ -262,19 +250,6 @@ func (r *gitSyncRepository) Delete(ctx context.Context, id, uid int64) error {
 func (r *gitSyncRepository) List(ctx context.Context, uid int64) ([]*domain.GitSyncConfig, error) {
 	q := r.gitSync(uid).GitSyncConfig
 	ms, err := q.WithContext(ctx).Where(q.UID.Eq(uid)).Order(q.ID.Desc()).Find()
-	if err != nil {
-		return nil, err
-	}
-	var res []*domain.GitSyncConfig
-	for _, m := range ms {
-		res = append(res, r.toDomain(m))
-	}
-	return res, nil
-}
-
-func (r *gitSyncRepository) ListByVaultID(ctx context.Context, vaultID, uid int64) ([]*domain.GitSyncConfig, error) {
-	q := r.gitSync(uid).GitSyncConfig
-	ms, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.VaultID.Eq(vaultID)).Order(q.ID.Desc()).Find()
 	if err != nil {
 		return nil, err
 	}

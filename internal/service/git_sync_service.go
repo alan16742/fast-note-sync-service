@@ -41,7 +41,6 @@ const gitSyncBatchSize = 100
 // GitSyncService 定义 Git 同步业务服务接口
 type GitSyncService interface {
 	GetConfigs(ctx context.Context, uid int64) ([]*dto.GitSyncConfigDTO, error)
-	GetConfig(ctx context.Context, uid int64, vaultID int64) (*dto.GitSyncConfigDTO, error)
 	UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error)
 	DeleteConfig(ctx context.Context, uid int64, id int64) error
 	Validate(ctx context.Context, params *dto.GitSyncValidateRequest) error
@@ -124,17 +123,6 @@ func (s *gitSyncService) GetConfigs(ctx context.Context, uid int64) ([]*dto.GitS
 		res = append(res, s.domainToDTO(c))
 	}
 	return res, nil
-}
-
-func (s *gitSyncService) GetConfig(ctx context.Context, uid int64, vaultID int64) (*dto.GitSyncConfigDTO, error) {
-	conf, err := s.repo.GetByVaultID(ctx, vaultID, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
-	}
-	if conf == nil {
-		return nil, code.ErrorVaultNotFound
-	}
-	return s.domainToDTO(conf), nil
 }
 
 func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error) {

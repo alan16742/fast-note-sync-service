@@ -405,6 +405,7 @@ CREATE TABLE "sync_log" (
     "changed_fields" text NOT NULL DEFAULT '',  -- 逗号分隔变更字段，如 'content,mtime' / 'mtime' / 'path'
     "path"           text DEFAULT '',
     "path_hash"      text DEFAULT '',
+    "old_path"       text DEFAULT '',
     "size"           integer DEFAULT 0,
     "client_name"    text DEFAULT '',
     "client_type"    text DEFAULT '',

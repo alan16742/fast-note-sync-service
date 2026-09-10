@@ -194,8 +194,13 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 		return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
 	}
 
+	// Only marks the folder as trashed, so this is a soft_delete. Logging
+	// SyncLogActionDelete made the derived event read as "permanent_delete",
+	// which inverted the "delete" and "permanent_delete" rules.
+	// 这里只是标记为已删除，因此属于 soft_delete。记录 SyncLogActionDelete 会让派生
+	// 事件被当作 "permanent_delete"，导致"删除"与"彻底删除"规则匹配反了。
 	if s.syncLogService != nil {
-		s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
+		s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionSoftDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
 	}
 
 	return s.domainToDTO(f), nil
@@ -280,8 +285,11 @@ func (s *folderService) DeleteTree(ctx context.Context, uid int64, params *dto.F
 		if _, err := s.folderRepo.Update(ctx, f, uid); err != nil {
 			return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
 		}
+		// Subtree folders are only trashed too, matching the soft_delete entries
+		// written for their notes and files above.
+		// 子树文件夹同样只是标记删除，与上面笔记/文件的 soft_delete 一致。
 		if s.syncLogService != nil {
-			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
+			s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionSoftDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
 		}
 	}
 
@@ -390,8 +398,11 @@ func (s *folderService) Rename(ctx context.Context, uid int64, params *dto.Folde
 		return nil, nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
+	// Log rename // 记录重命名日志
+	// Carry the source path so rules scoped to the old location still match.
+	// 带上源路径，使限定原位置的规则仍能匹配。
 	if s.syncLogService != nil {
-		s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionRename, "path", newFolderCreated.Path, newFolderCreated.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
+		s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionRename, "path", newFolderCreated.Path, newFolderCreated.PathHash, s.clientType, s.clientName, s.clientVersion, 0, WithOldPath(oldFolder.Path))
 	}
 
 	return s.domainToDTO(oldFolder), s.domainToDTO(newFolderCreated), nil
@@ -672,8 +683,10 @@ func (s *folderService) CleanupEmptyAncestors(ctx context.Context, uid int64, va
 			if _, err := s.folderRepo.Update(ctx, f, uid); err != nil {
 				return code.ErrorFolderDeleteFailed.WithDetails(err.Error())
 			}
+			// Auto-cleanup also only trashes the folder, so log soft_delete.
+			// 自动清理同样是标记删除，因此记录 soft_delete。
 			if s.syncLogService != nil {
-				s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
+				s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeFolder, domain.SyncLogActionSoftDelete, "", f.Path, f.PathHash, s.clientType, s.clientName, s.clientVersion, 0)
 			}
 		}
 

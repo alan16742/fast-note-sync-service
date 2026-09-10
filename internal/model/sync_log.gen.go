@@ -18,6 +18,7 @@ type SyncLog struct {
 	ChangedFields string     `gorm:"column:changed_fields;type:TEXT;default:''" json:"changedFields" form:"changedFields"`
 	Path          string     `gorm:"column:path;type:TEXT;default:''" json:"path" form:"path"`
 	PathHash      string     `gorm:"column:path_hash;default:''" json:"pathHash" form:"pathHash"`
+	OldPath       string     `gorm:"column:old_path;type:TEXT;default:''" json:"oldPath" form:"oldPath"`
 	Size          int64      `gorm:"column:size;default:0" json:"size" form:"size"`
 	ClientName    string     `gorm:"column:client_name;default:''" json:"clientName" form:"clientName"`
 	ClientType    string     `gorm:"column:client_type;default:''" json:"clientType" form:"clientType"`

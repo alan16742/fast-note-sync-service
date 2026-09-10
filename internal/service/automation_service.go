@@ -21,6 +21,12 @@ import (
 
 const automationDefaultTimezone = "Asia/Shanghai"
 
+// automationRulesCacheTTL bounds how long a per-user enabled-rule snapshot may be
+// reused, so a burst of note saves doesn't repeat the same ListEnabled query.
+// automationRulesCacheTTL 限制每个用户启用规则快照可复用的时长，避免一次笔记保存风暴
+// 重复执行相同的 ListEnabled 查询。
+const automationRulesCacheTTL = 3 * time.Second
+
 // AutomationService is the central event-to-target coordinator. Events carry
 // no target-specific configuration; triggers decide which existing targets are
 // invoked after their conditions match.
@@ -42,6 +48,16 @@ type AutomationEventPublisher interface {
 	Publish(ctx context.Context, event *domain.AutomationEvent)
 }
 
+type automationRulesCacheEntry struct {
+	triggers  []*domain.AutomationTrigger
+	expiresAt time.Time
+}
+
+type automationUserRulesCache struct {
+	mu     sync.Mutex
+	byType map[domain.AutomationEventType]automationRulesCacheEntry
+}
+
 type automationService struct {
 	repo           domain.AutomationRepository
 	vaultRepo      domain.VaultRepository
@@ -58,6 +74,8 @@ type automationService struct {
 	stopped        bool
 	eventWg        sync.WaitGroup
 	doneCh         chan struct{}
+	cacheMu        sync.Mutex
+	rulesCache     map[int64]*automationUserRulesCache
 }
 
 // NewAutomationService creates the central automation coordinator.
@@ -78,6 +96,7 @@ func NewAutomationService(
 		repo: repo, vaultRepo: vaultRepo, backupService: backupService, gitSyncService: gitSyncService,
 		webhookService: webhookService,
 		pool:           pool, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
+		rulesCache: make(map[int64]*automationUserRulesCache),
 	}
 }
 
@@ -113,6 +132,7 @@ func (s *automationService) Save(ctx context.Context, uid int64, request *dto.Au
 	if err != nil {
 		return nil, err
 	}
+	s.invalidateRulesCache(uid)
 	result := automationToDTO(saved)
 	result.Warnings = s.targetReuseWarnings(ctx, uid, saved)
 	return result, nil
@@ -153,7 +173,11 @@ func (s *automationService) Delete(ctx context.Context, uid, id int64) error {
 	if id <= 0 {
 		return errors.New("automation trigger id is required")
 	}
-	return s.repo.Delete(ctx, id, uid)
+	if err := s.repo.Delete(ctx, id, uid); err != nil {
+		return err
+	}
+	s.invalidateRulesCache(uid)
+	return nil
 }
 
 // Trigger emits a manual event for one manual trigger. It is deliberately
@@ -214,8 +238,7 @@ func (s *automationService) Publish(_ context.Context, event *domain.AutomationE
 }
 
 func (s *automationService) publishNow(ctx context.Context, event *domain.AutomationEvent) {
-	s.enrichEvent(ctx, event)
-	triggers, err := s.repo.ListEnabled(ctx, event.UID, event.Type)
+	triggers, err := s.listEnabledCached(ctx, event.UID, event.Type)
 	if err != nil {
 		s.logger.Warn("load automation triggers failed", zap.Int64("uid", event.UID), zap.String("eventType", string(event.Type)), zap.Error(err))
 		return
@@ -224,10 +247,52 @@ func (s *automationService) publishNow(ctx context.Context, event *domain.Automa
 		if !automationTriggerMatches(trigger, event) {
 			continue
 		}
+		s.enrichEvent(ctx, event)
 		if err := s.dispatchTrigger(context.Background(), trigger, event); err != nil {
 			s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.Error(err))
 		}
 	}
+}
+
+// listEnabledCached returns the enabled triggers for a user/event type, reusing
+// a snapshot for automationRulesCacheTTL. Cached triggers are treated as
+// read-only by matching and dispatch, so sharing the slice is safe.
+func (s *automationService) listEnabledCached(ctx context.Context, uid int64, eventType domain.AutomationEventType) ([]*domain.AutomationTrigger, error) {
+	cache := s.userRulesCache(uid)
+	// Serialize cache misses and invalidation per user. A query started before
+	// Save/Delete must not repopulate the cache after invalidation completed.
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if entry, ok := cache.byType[eventType]; ok && time.Now().Before(entry.expiresAt) {
+		return entry.triggers, nil
+	}
+
+	triggers, err := s.repo.ListEnabled(ctx, uid, eventType)
+	if err != nil {
+		return nil, err
+	}
+
+	cache.byType[eventType] = automationRulesCacheEntry{triggers: triggers, expiresAt: time.Now().Add(automationRulesCacheTTL)}
+	return triggers, nil
+}
+
+func (s *automationService) userRulesCache(uid int64) *automationUserRulesCache {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.rulesCache == nil {
+		s.rulesCache = make(map[int64]*automationUserRulesCache)
+	}
+	if s.rulesCache[uid] == nil {
+		s.rulesCache[uid] = &automationUserRulesCache{byType: make(map[domain.AutomationEventType]automationRulesCacheEntry)}
+	}
+	return s.rulesCache[uid]
+}
+
+func (s *automationService) invalidateRulesCache(uid int64) {
+	cache := s.userRulesCache(uid)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	clear(cache.byType)
 }
 
 func (s *automationService) enrichEvent(ctx context.Context, event *domain.AutomationEvent) {
@@ -731,7 +796,7 @@ func automationEventFromSyncLog(log *domain.SyncLog) *domain.AutomationEvent {
 	}
 	return &domain.AutomationEvent{
 		ID: uuid.NewString(), OccurredAt: time.Time(log.CreatedAt), UID: log.UID, VaultID: log.VaultID,
-		Type: domain.AutomationEventFileBehavior, Action: action, Path: log.Path, PathHash: log.PathHash,
+		Type: domain.AutomationEventFileBehavior, Action: action, Path: log.Path, OldPath: log.OldPath, PathHash: log.PathHash,
 		ChangedFields: splitChangedFields(log.ChangedFields), Size: log.Size,
 		ClientType: log.ClientType, ClientName: log.ClientName, ClientVersion: log.ClientVersion,
 		Source: "sync_log",

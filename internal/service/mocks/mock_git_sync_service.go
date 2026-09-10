@@ -30,14 +30,6 @@ func (m *MockGitSyncService) GetConfigs(ctx context.Context, uid int64) ([]*dto.
 	return nil, args.Error(1)
 }
 
-func (m *MockGitSyncService) GetConfig(ctx context.Context, uid int64, vaultID int64) (*dto.GitSyncConfigDTO, error) {
-	args := m.Called(ctx, uid, vaultID)
-	if v := args.Get(0); v != nil {
-		return v.(*dto.GitSyncConfigDTO), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-
 func (m *MockGitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error) {
 	args := m.Called(ctx, uid, params)
 	if v := args.Get(0); v != nil {

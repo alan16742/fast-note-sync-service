@@ -91,7 +91,7 @@ func initServices(cfg *AppConfig, infra *Infra, repos *Repositories, logger *zap
 	s.FileService = service.NewFileService(repos.UserRepo, repos.FileRepo, repos.NoteRepo, s.VaultService, s.FolderService, s.SyncLogService, svcConfig)
 	s.SettingService = service.NewSettingService(repos.SettingRepo, s.VaultService, s.SyncLogService, svcConfig)
 	s.NoteHistoryService = service.NewNoteHistoryService(repos.NoteHistoryRepo, repos.NoteRepo, repos.UserRepo, s.VaultService, s.FolderService, s.NoteService, logger, &svcConfig.App, s.AutomationService)
-	s.ConflictService = service.NewConflictService(repos.NoteRepo, s.VaultService, logger)
+	s.ConflictService = service.NewConflictService(repos.NoteRepo, s.VaultService, s.SyncLogService, s.AutomationService, logger)
 	s.ShareService = service.NewShareService(repos.ShareRepo, infra.TokenManager, repos.NoteRepo, repos.FileRepo, repos.VaultRepo, logger, svcConfig)
 	s.NoteLinkService = service.NewNoteLinkService(repos.NoteLinkRepo, repos.NoteRepo, s.VaultService)
 	s.CloudflareService = service.NewCloudflareService(logger)

@@ -24,12 +24,6 @@ type GitSyncValidateRequest struct {
 	Branch   string `json:"branch" form:"branch"`
 }
 
-// GitSyncExecuteRequest manually execute git repository sync task request
-// GitSyncExecuteRequest 手动执行 git 仓库同步任务请求
-type GitSyncExecuteRequest struct {
-	ID int64 `json:"id" form:"id" binding:"required"`
-}
-
 // GitSyncCleanRequest cleanup git repository sync task workspace request
 // GitSyncCleanRequest 清理 git 仓库同步任务工作区请求
 type GitSyncCleanRequest struct {

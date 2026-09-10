@@ -69,6 +69,7 @@ type SyncLog struct {
 	ChangedFields string        // Comma-separated changed fields, e.g. "content,mtime" / "mtime" / "path" // 逗号分隔的变更字段
 	Path          string        // Resource path // 资源路径
 	PathHash      string        // Resource path hash // 资源路径哈希
+	OldPath       string        // Previous path, set on rename // 原路径，重命名时填写
 	Size          int64         // Resource size in bytes // 资源大小（字节）
 	ClientName    string        // Client name that initiated the sync // 发起同步的客户端名称
 	ClientType    string        // Client type // 客户端类型

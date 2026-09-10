@@ -30,20 +30,32 @@ type ConflictService interface {
 // conflictService implements ConflictService interface
 // conflictService 实现 ConflictService 接口
 type conflictService struct {
-	noteRepo     domain.NoteRepository
-	vaultService VaultService
-	logger       *zap.Logger
-	clientName   string
+	noteRepo       domain.NoteRepository
+	vaultService   VaultService
+	syncLogService SyncLogService
+	eventPublisher NoteEventPublisher
+	logger         *zap.Logger
+	clientName     string
+	clientType     string
 }
 
 // NewConflictService creates a ConflictService instance
 // NewConflictService 创建 ConflictService 实例
-func NewConflictService(noteRepo domain.NoteRepository, vaultSvc VaultService, logger *zap.Logger) ConflictService {
+func NewConflictService(
+	noteRepo domain.NoteRepository,
+	vaultSvc VaultService,
+	syncLogService SyncLogService,
+	eventPublisher NoteEventPublisher,
+	logger *zap.Logger,
+) ConflictService {
 	return &conflictService{
-		noteRepo:     noteRepo,
-		vaultService: vaultSvc,
-		logger:       logger,
-		clientName:   "conflict-service",
+		noteRepo:       noteRepo,
+		vaultService:   vaultSvc,
+		syncLogService: syncLogService,
+		eventPublisher: eventPublisher,
+		logger:         logger,
+		clientName:     "conflict-service",
+		clientType:     "server",
 	}
 }
 
@@ -74,6 +86,7 @@ func (s *conflictService) CreateConflictFile(ctx context.Context, uid int64, par
 		Content:     params.ClientContent,
 		ContentHash: params.ClientContentHash,
 		ClientName:  s.clientName,
+		ClientType:  s.clientType,
 		Size:        int64(len(params.ClientContent)),
 		Mtime:       params.Mtime,
 		Ctime:       params.Ctime,
@@ -97,6 +110,20 @@ func (s *conflictService) CreateConflictFile(ctx context.Context, uid int64, par
 		zap.String("conflictPath", conflictPath),
 		zap.Int64(logger.FieldUID, uid),
 		zap.Int64("noteId", created.ID))
+
+	// The conflict copy is written straight through the repository, so record it
+	// in the audit log and publish the note event that automation matches on.
+	// Log() alone is not enough: it only publishes automation events for
+	// file/folder types, never for notes.
+	// 冲突副本直接经仓储写入，因此需要补写审计日志并发布自动化所匹配的笔记事件。
+	// 仅调用 Log() 不够：它只为 file/folder 类型发布自动化事件，不会为笔记发布。
+	if s.syncLogService != nil {
+		s.syncLogService.Log(
+			uid, vaultID, domain.SyncLogTypeNote, domain.SyncLogActionCreate, "",
+			created.Path, created.PathHash, s.clientType, s.clientName, "", created.Size,
+		)
+	}
+	publishNoteChangeEvent(ctx, s.eventPublisher, uid, vaultID, params.Vault, domain.WebhookActionCreate, created, "", "content", "ctime", "mtime")
 
 	return &dto.ConflictFileResponse{
 		ConflictPath: conflictPath,

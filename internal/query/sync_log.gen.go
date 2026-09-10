@@ -36,6 +36,7 @@ func newSyncLog(db *gorm.DB, opts ...gen.DOOption) syncLog {
 	_syncLog.ChangedFields = field.NewString(tableName, "changed_fields")
 	_syncLog.Path = field.NewString(tableName, "path")
 	_syncLog.PathHash = field.NewString(tableName, "path_hash")
+	_syncLog.OldPath = field.NewString(tableName, "old_path")
 	_syncLog.Size = field.NewInt64(tableName, "size")
 	_syncLog.ClientName = field.NewString(tableName, "client_name")
 	_syncLog.ClientType = field.NewString(tableName, "client_type")
@@ -61,6 +62,7 @@ type syncLog struct {
 	ChangedFields field.String
 	Path          field.String
 	PathHash      field.String
+	OldPath       field.String
 	Size          field.Int64
 	ClientName    field.String
 	ClientType    field.String
@@ -92,6 +94,7 @@ func (s *syncLog) updateTableName(table string) *syncLog {
 	s.ChangedFields = field.NewString(table, "changed_fields")
 	s.Path = field.NewString(table, "path")
 	s.PathHash = field.NewString(table, "path_hash")
+	s.OldPath = field.NewString(table, "old_path")
 	s.Size = field.NewInt64(table, "size")
 	s.ClientName = field.NewString(table, "client_name")
 	s.ClientType = field.NewString(table, "client_type")
@@ -123,7 +126,7 @@ func (s *syncLog) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (s *syncLog) fillFieldMap() {
-	s.fieldMap = make(map[string]field.Expr, 15)
+	s.fieldMap = make(map[string]field.Expr, 16)
 	s.fieldMap["id"] = s.ID
 	s.fieldMap["uid"] = s.UID
 	s.fieldMap["vault_id"] = s.VaultID
@@ -132,6 +135,7 @@ func (s *syncLog) fillFieldMap() {
 	s.fieldMap["changed_fields"] = s.ChangedFields
 	s.fieldMap["path"] = s.Path
 	s.fieldMap["path_hash"] = s.PathHash
+	s.fieldMap["old_path"] = s.OldPath
 	s.fieldMap["size"] = s.Size
 	s.fieldMap["client_name"] = s.ClientName
 	s.fieldMap["client_type"] = s.ClientType

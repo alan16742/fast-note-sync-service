@@ -160,3 +160,39 @@ func TestAutomationEventFromSyncLogNormalizesFileActions(t *testing.T) {
 		}
 	}
 }
+
+// TestAutomationEventFromSyncLogPreservesOldPathOnRename guards the rename path:
+// the source path must reach the derived event, otherwise a rule scoped to the
+// folder a resource is moved out of silently stops matching.
+// TestAutomationEventFromSyncLogPreservesOldPathOnRename 保护重命名链路：源路径必须传递到
+// 派生事件，否则限定在资源被移出目录上的规则会静默失去匹配。
+func TestAutomationEventFromSyncLogPreservesOldPathOnRename(t *testing.T) {
+	event := automationEventFromSyncLog(&domain.SyncLog{
+		UID: 1, VaultID: 2, Action: domain.SyncLogActionRename,
+		Path: "Archive/notes.md", OldPath: "Projects/notes.md",
+	})
+	if event.Action != "rename" {
+		t.Fatalf("action = %q, want %q", event.Action, "rename")
+	}
+	if event.OldPath != "Projects/notes.md" {
+		t.Fatalf("OldPath = %q, want the pre-rename path", event.OldPath)
+	}
+
+	rule := &domain.AutomationTrigger{
+		Enabled: true, VaultID: 2,
+		Events: []domain.AutomationEventRule{{
+			Type: domain.AutomationEventFileBehavior, EventActions: []string{"rename"}, PathPrefix: "Projects/",
+		}},
+	}
+	if !automationTriggerMatches(rule, event) {
+		t.Fatal("rule scoped to the source path did not match the rename")
+	}
+
+	// Without the source path the same rule must not match — the regression this
+	// test exists to prevent.
+	// 缺少源路径时同一规则不应匹配——这正是本测试要防止的回归。
+	event.OldPath = ""
+	if automationTriggerMatches(rule, event) {
+		t.Fatal("rule scoped to the source path matched even though no OldPath was set")
+	}
+}
