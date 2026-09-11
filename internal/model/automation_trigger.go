@@ -4,9 +4,8 @@ import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 
 const TableNameAutomationTrigger = "automation_rule"
 
-// AutomationTrigger is the persisted common scope, event branches, and
-// target bindings. The automation feature was not released, so this is a new
-// schema rather than a migration of the previous flattened rule shape.
+// AutomationTrigger is the persisted common scope, event branches, and target
+// bindings.
 type AutomationTrigger struct {
 	ID            int64      `gorm:"column:id;primaryKey"`
 	UID           int64      `gorm:"column:uid;not null;index:idx_automation_rule_uid"`

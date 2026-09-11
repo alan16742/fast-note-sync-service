@@ -110,26 +110,6 @@ func TestPollTimeTriggersMarksOnlySuccessfulDispatch(t *testing.T) {
 	}
 }
 
-func TestPollTimeTriggersSkipsPersistedMixedAllRule(t *testing.T) {
-	repo := &automationCronRepository{trigger: &domain.AutomationTrigger{
-		ID: 1, UID: 42, VaultID: 7, Enabled: true, MatchMode: domain.AutomationMatchAll, Timezone: "UTC",
-		Events: []domain.AutomationEventRule{
-			{Type: domain.AutomationEventCron, Schedule: "* * * * *"},
-			{Type: domain.AutomationEventNoteContent, ContentContains: "release"},
-		},
-		Actions:   []domain.AutomationAction{{Type: domain.AutomationTargetBackup, ConfigID: 2}},
-		LastRunAt: time.Now().Add(-2 * time.Minute),
-	}}
-	backup := &automationBackupStub{}
-	svc := NewAutomationService(repo, nil, backup, nil, nil, newAutomationExecutionPool(t), zap.NewNop()).(*automationService)
-
-	svc.pollTimeTriggers()
-
-	require.Zero(t, backup.calls.Load())
-	require.Zero(t, repo.marked.Load())
-	require.Zero(t, repo.attempted.Load())
-}
-
 func TestGitExecuteSyncReturnsTheActualTaskError(t *testing.T) {
 	t.Chdir(t.TempDir())
 	repo := new(domainmocks.MockGitSyncRepository)

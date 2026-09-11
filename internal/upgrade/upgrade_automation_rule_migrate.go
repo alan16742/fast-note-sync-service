@@ -14,16 +14,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// LegacyAutomationRuleMigrate converts the pre-automation auto-run settings into
+// AutomationRuleMigrate converts the pre-automation auto-run settings into
 // automation_rule entries. Those columns (backup_config.is_enabled/cron_*,
 // git_sync_config.is_enabled/delay) were dropped from the runtime without a
 // migration, so upgraded installs silently lost their scheduled backups and
 // auto Git syncs, with no UI switch left to restore them.
-// LegacyAutomationRuleMigrate 将自动化重构前的自动运行设置转换为 automation_rule 记录。
+// AutomationRuleMigrate 将自动化重构前的自动运行设置转换为 automation_rule 记录。
 // 这些列（backup_config.is_enabled/cron_*、git_sync_config.is_enabled/delay）
 // 在无迁移的情况下被移除，导致升级后的实例定时备份与自动 Git 同步静默失效，
 // 且 UI 已无开关可恢复。
-type LegacyAutomationRuleMigrate struct{}
+type AutomationRuleMigrate struct{}
 
 // legacyNotifyUpdatedActions mirrors the actions the pre-automation runtime
 // forwarded to backup and Git sync. Delete/rename/restore fired NotifyUpdated
@@ -32,30 +32,15 @@ type LegacyAutomationRuleMigrate struct{}
 // 删除/重命名/恢复同样会触发 NotifyUpdated，只订阅 create/modify 会让它们静默丢失。
 var legacyNotifyUpdatedActions = []string{"create", "modify", "delete", "rename", "restore"}
 
-// Version identifies the release introducing automation. Repair completion uses
-// MigrationID instead, so already-started builds can still receive the repair.
-func (m *LegacyAutomationRuleMigrate) Version() string {
-	return "3.6.1"
-}
-
-func (m *LegacyAutomationRuleMigrate) MigrationID() string {
-	// Earlier attempts used bare release versions (3.6.0 or 3.7.0) and only
-	// migrated note events. Those markers must not suppress this repair.
-	return "legacy-automation-rules-v2"
-}
-
-// RunsUnconditionally implements unconditionalMigration: instances that already
-// started this build before the migration shipped have lastVersion == running
-// version and would otherwise skip it forever.
-// RunsUnconditionally 实现 unconditionalMigration：在本迁移落地前就启动过该版本的
-// 实例，其 lastVersion 已等于运行版本，否则会被永久跳过。
-func (m *LegacyAutomationRuleMigrate) RunsUnconditionally() bool {
-	return true
+// Version identifies the release introducing automation and the legacy settings
+// migration. It must be newer than the last release containing the old columns.
+func (m *AutomationRuleMigrate) Version() string {
+	return "3.7.0"
 }
 
 // Description returns the migration description
 // Description 返回升级描述
-func (m *LegacyAutomationRuleMigrate) Description() string {
+func (m *AutomationRuleMigrate) Description() string {
 	return "Convert legacy backup_config/git_sync_config auto-run settings into automation_rule entries"
 }
 
@@ -78,7 +63,7 @@ type legacyGitSyncConfigRow struct {
 
 // Up runs the migration
 // Up 执行升级操作
-func (m *LegacyAutomationRuleMigrate) Up(db *gorm.DB, ctx context.Context, mc *MigrationContext) error {
+func (m *AutomationRuleMigrate) Up(_ *gorm.DB, ctx context.Context, mc *MigrationContext) error {
 	if mc.Dao == nil {
 		return fmt.Errorf("dao is nil in migration context")
 	}
@@ -98,17 +83,12 @@ func (m *LegacyAutomationRuleMigrate) Up(db *gorm.DB, ctx context.Context, mc *M
 		}
 
 		// The manager's main-database transaction cannot roll back user databases.
-		// Commit both target migrations together for each user; retries deduplicate
-		// users whose transaction already completed.
+		// Keep the two legacy target conversions atomic within this user's database.
 		if err := automationDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			existing, err := m.existingTargets(tx, ctx, uid)
-			if err != nil {
+			if err := m.migrateBackupConfigs(mc, tx, ctx, uid); err != nil {
 				return err
 			}
-			if err := m.migrateBackupConfigs(mc, tx, ctx, uid, existing); err != nil {
-				return err
-			}
-			return m.migrateGitSyncConfigs(mc, tx, ctx, uid, existing)
+			return m.migrateGitSyncConfigs(mc, tx, ctx, uid)
 		}); err != nil {
 			return err
 		}
@@ -117,38 +97,7 @@ func (m *LegacyAutomationRuleMigrate) Up(db *gorm.DB, ctx context.Context, mc *M
 	return nil
 }
 
-// Only equivalent event branches in the same vault replace a legacy trigger.
-// Manual rules and rules for another vault must not suppress automatic migration.
-func (m *LegacyAutomationRuleMigrate) existingTargets(automationDB *gorm.DB, ctx context.Context, uid int64) (map[string]struct{}, error) {
-	targets := make(map[string]struct{})
-	var rows []model.AutomationTrigger
-	if err := automationDB.WithContext(ctx).Where("uid = ?", uid).Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("failed to list automation rules for uid %d: %w", uid, err)
-	}
-	for _, row := range rows {
-		var actions []domain.AutomationAction
-		var events []domain.AutomationEventRule
-		if err := json.Unmarshal([]byte(row.Actions), &actions); err != nil {
-			return nil, fmt.Errorf("decode automation rule %d actions: %w", row.ID, err)
-		}
-		if err := json.Unmarshal([]byte(row.Events), &events); err != nil {
-			return nil, fmt.Errorf("decode automation rule %d events: %w", row.ID, err)
-		}
-		if row.MatchMode == string(domain.AutomationMatchAll) && len(events) > 1 {
-			continue
-		}
-		for _, action := range actions {
-			for _, event := range events {
-				for _, branch := range legacyEventBranches(event) {
-					targets[legacyCoverageKey(row.VaultID, action, branch, row.Timezone)] = struct{}{}
-				}
-			}
-		}
-	}
-	return targets, nil
-}
-
-func (m *LegacyAutomationRuleMigrate) migrateBackupConfigs(mc *MigrationContext, automationDB *gorm.DB, ctx context.Context, uid int64, existing map[string]struct{}) error {
+func (m *AutomationRuleMigrate) migrateBackupConfigs(mc *MigrationContext, automationDB *gorm.DB, ctx context.Context, uid int64) error {
 	backupDB := mc.Dao.ResolveDB("user_backup_" + fmt.Sprintf("%d", uid))
 	if backupDB == nil {
 		return fmt.Errorf("cannot open backup database for uid %d", uid)
@@ -189,7 +138,7 @@ func (m *LegacyAutomationRuleMigrate) migrateBackupConfigs(mc *MigrationContext,
 		}
 
 		name := fmt.Sprintf("Migrated backup #%d", row.ID)
-		if err := m.insertRule(automationDB, ctx, uid, row.VaultID, name, events, domain.AutomationAction{Type: domain.AutomationTargetBackup, ConfigID: row.ID}, existing); err != nil {
+		if err := m.insertRule(automationDB, ctx, uid, row.VaultID, name, events, domain.AutomationAction{Type: domain.AutomationTargetBackup, ConfigID: row.ID}); err != nil {
 			return err
 		}
 		mc.Logger.Info("migrated legacy backup config to automation rule",
@@ -198,7 +147,7 @@ func (m *LegacyAutomationRuleMigrate) migrateBackupConfigs(mc *MigrationContext,
 	return nil
 }
 
-func (m *LegacyAutomationRuleMigrate) migrateGitSyncConfigs(mc *MigrationContext, automationDB *gorm.DB, ctx context.Context, uid int64, existing map[string]struct{}) error {
+func (m *AutomationRuleMigrate) migrateGitSyncConfigs(mc *MigrationContext, automationDB *gorm.DB, ctx context.Context, uid int64) error {
 	gitDB := mc.Dao.ResolveDB("user_git_sync_" + fmt.Sprintf("%d", uid))
 	if gitDB == nil {
 		return fmt.Errorf("cannot open git sync database for uid %d", uid)
@@ -223,7 +172,7 @@ func (m *LegacyAutomationRuleMigrate) migrateGitSyncConfigs(mc *MigrationContext
 		// automation equivalent, so note changes dispatch directly.
 		// 旧行为：笔记变更后按 delay 防抖同步；自动化无防抖等价物，变更直接派发。
 		name := fmt.Sprintf("Migrated git sync #%d", row.ID)
-		if err := m.insertRule(automationDB, ctx, uid, row.VaultID, name, legacySyncEvents(), domain.AutomationAction{Type: domain.AutomationTargetGit, ConfigID: row.ID}, existing); err != nil {
+		if err := m.insertRule(automationDB, ctx, uid, row.VaultID, name, legacySyncEvents(), domain.AutomationAction{Type: domain.AutomationTargetGit, ConfigID: row.ID}); err != nil {
 			return err
 		}
 		mc.Logger.Info("migrated legacy git sync config to automation rule",
@@ -239,57 +188,18 @@ func legacySyncEvents() []domain.AutomationEventRule {
 	}
 }
 
-func legacyEventBranches(event domain.AutomationEventRule) []domain.AutomationEventRule {
-	if event.Type == domain.AutomationEventNoteContent {
-		event.EventActions = nil
-		return []domain.AutomationEventRule{event}
-	}
-	if len(event.EventActions) == 0 {
-		return []domain.AutomationEventRule{event}
-	}
-	branches := make([]domain.AutomationEventRule, 0, len(event.EventActions))
-	for _, action := range event.EventActions {
-		branch := event
-		branch.EventActions = []string{action}
-		branches = append(branches, branch)
-	}
-	return branches
-}
-
-func legacyCoverageKey(vaultID int64, action domain.AutomationAction, event domain.AutomationEventRule, timezone string) string {
-	if event.Type != domain.AutomationEventCron {
-		timezone = ""
-	}
-	encoded, _ := json.Marshal(event)
-	return fmt.Sprintf("%d:%s:%d:%s:%s", vaultID, action.Type, action.ConfigID, timezone, encoded)
-}
-
-func (m *LegacyAutomationRuleMigrate) insertRule(automationDB *gorm.DB, ctx context.Context, uid, vaultID int64, name string, desired []domain.AutomationEventRule, action domain.AutomationAction, existing map[string]struct{}) error {
+func (m *AutomationRuleMigrate) insertRule(automationDB *gorm.DB, ctx context.Context, uid, vaultID int64, name string, events []domain.AutomationEventRule, action domain.AutomationAction) error {
 	// Legacy cron evaluated time.Now() in the server's local timezone.
 	timezone := time.Local.String()
-	var missing []domain.AutomationEventRule
-	for _, event := range desired {
-		remaining := event
-		remaining.EventActions = nil
-		for _, branch := range legacyEventBranches(event) {
-			key := legacyCoverageKey(vaultID, action, branch, timezone)
-			if _, found := existing[key]; found {
-				continue
-			}
-			if len(branch.EventActions) == 0 {
-				missing = append(missing, branch)
-			} else {
-				remaining.EventActions = append(remaining.EventActions, branch.EventActions...)
-			}
-		}
-		if len(remaining.EventActions) > 0 {
-			missing = append(missing, remaining)
-		}
+	var existing int64
+	if err := automationDB.WithContext(ctx).Model(&model.AutomationTrigger{}).
+		Where("uid = ? AND vault_id = ? AND name = ?", uid, vaultID, name).Count(&existing).Error; err != nil {
+		return fmt.Errorf("failed to check existing migrated rule for uid %d: %w", uid, err)
 	}
-	if len(missing) == 0 {
+	if existing > 0 {
 		return nil
 	}
-	events, err := json.Marshal(missing)
+	eventsJSON, err := json.Marshal(events)
 	if err != nil {
 		return err
 	}
@@ -301,16 +211,11 @@ func (m *LegacyAutomationRuleMigrate) insertRule(automationDB *gorm.DB, ctx cont
 	rule := &model.AutomationTrigger{
 		UID: uid, Name: name, Enabled: 1, VaultID: vaultID,
 		Timezone: timezone, MatchMode: string(domain.AutomationMatchAny),
-		Events: string(events), Actions: string(actions),
+		Events: string(eventsJSON), Actions: string(actions),
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := automationDB.WithContext(ctx).Create(rule).Error; err != nil {
 		return fmt.Errorf("failed to insert automation rule for uid %d: %w", uid, err)
-	}
-	for _, event := range missing {
-		for _, branch := range legacyEventBranches(event) {
-			existing[legacyCoverageKey(vaultID, action, branch, timezone)] = struct{}{}
-		}
 	}
 	return nil
 }

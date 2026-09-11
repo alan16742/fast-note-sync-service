@@ -404,13 +404,6 @@ func (s *automationService) pollTimeTriggers() {
 	}
 	now := time.Now()
 	for _, trigger := range triggers {
-		if err := validateAutomationEventCombination(string(trigger.MatchMode), trigger.Events); err != nil {
-			// Cron polling has its own schedule path and therefore does not pass
-			// through automationTriggerMatches. Revalidate persisted rules here so
-			// an old or externally-written mixed-type ALL rule cannot fire.
-			s.logger.Warn("skip invalid automation trigger", zap.Int64("triggerID", trigger.ID), zap.Error(err))
-			continue
-		}
 		location, err := time.LoadLocation(trigger.Timezone)
 		if err != nil {
 			location = time.Local
@@ -648,9 +641,9 @@ func validateAutomationEventCombination(matchMode string, events []domain.Automa
 
 func normalizeAutomationMatchMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "any", "or":
+	case "", "any":
 		return string(domain.AutomationMatchAny)
-	case "all", "and":
+	case "all":
 		return string(domain.AutomationMatchAll)
 	default:
 		return ""
@@ -658,18 +651,7 @@ func normalizeAutomationMatchMode(value string) string {
 }
 
 func normalizeAutomationEventType(eventType domain.AutomationEventType) domain.AutomationEventType {
-	switch strings.ToLower(strings.TrimSpace(string(eventType))) {
-	case "time":
-		return domain.AutomationEventCron
-	case "content":
-		return domain.AutomationEventNoteContent
-	case "file":
-		return domain.AutomationEventFileBehavior
-	case "todo":
-		return domain.AutomationEventTodoReminder
-	default:
-		return domain.AutomationEventType(strings.ToLower(strings.TrimSpace(string(eventType))))
-	}
+	return domain.AutomationEventType(strings.ToLower(strings.TrimSpace(string(eventType))))
 }
 
 func normalizeEventActions(actions []string) ([]string, error) {

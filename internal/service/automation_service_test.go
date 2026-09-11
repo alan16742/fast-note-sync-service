@@ -151,6 +151,29 @@ func TestAutomationFromRequestRequiresExplicitActionsAndValidMatchMode(t *testin
 	}
 }
 
+func TestAutomationFromRequestAcceptsOnlyCanonicalValues(t *testing.T) {
+	for _, eventType := range []domain.AutomationEventType{"time", "content", "file", "todo"} {
+		_, err := automationFromRequest(&dto.AutomationTriggerRequest{
+			Name: "alias", Enabled: true, VaultID: 1,
+			Events:  []dto.AutomationEventRuleDTO{{Type: eventType}},
+			Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
+		}, 1)
+		if err == nil {
+			t.Fatalf("non-canonical event type %q should be rejected", eventType)
+		}
+	}
+	for _, matchMode := range []string{"or", "and"} {
+		_, err := automationFromRequest(&dto.AutomationTriggerRequest{
+			Name: "alias", Enabled: true, VaultID: 1, MatchMode: matchMode,
+			Events:  []dto.AutomationEventRuleDTO{{Type: domain.AutomationEventManual}},
+			Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
+		}, 1)
+		if err == nil {
+			t.Fatalf("non-canonical match mode %q should be rejected", matchMode)
+		}
+	}
+}
+
 func TestValidateAutomationEventCombination(t *testing.T) {
 	sameType := []domain.AutomationEventRule{
 		{Type: domain.AutomationEventNoteContent, ContentContains: "release"},

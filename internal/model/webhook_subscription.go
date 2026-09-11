@@ -2,8 +2,7 @@ package model
 
 import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 
-// Notification channels were never released with the old reminder-webhook
-// schema, so the redesigned automation target starts from a fresh table.
+// Webhook subscriptions are stored in their own user-scoped table.
 const TableNameWebhookSubscription = "notification_channel"
 
 // WebhookSubscription is the persisted user webhook configuration.

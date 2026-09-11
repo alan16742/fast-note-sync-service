@@ -7,7 +7,7 @@ Cron 动作会等待所有目标完成后才记录成功；失败的尝试单独
 ## 事件分支
 
 - `cron`：按 Cron 表达式触发，使用规则公共时区。
-- `note_content`：匹配笔记正文以及笔记行为。
+- `note_content`：匹配笔记正文内容（笔记变更事件）。
 - `file_behavior`：匹配路径前缀、路径 Glob 以及文件/目录行为。
 - `todo_reminder`：使用专用 Markdown 待办解析器，仅连接通知渠道；规则只提供公共时区。
 - `manual`：通过 WebGUI 的手动触发按钮或 API 运行。
@@ -31,7 +31,7 @@ Cron 动作会等待所有目标完成后才记录成功；失败的尝试单独
   "timezone": "Asia/Shanghai",
   "matchMode": "any",
   "events": [
-    {"type": "note_content", "contentContains": "发布", "eventActions": ["modify"]},
+    {"type": "note_content", "contentContains": "发布"},
     {"type": "file_behavior", "pathGlob": "Projects/*.md", "eventActions": ["create", "modify"]}
   ],
   "actions": [{"type": "git", "configId": 4}]

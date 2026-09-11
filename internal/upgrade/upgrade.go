@@ -36,40 +36,6 @@ type Migration interface {
 	Up(db *gorm.DB, ctx context.Context, mc *MigrationContext) error
 }
 
-// unconditionalMigration is implemented by migrations that must still run when
-// config/lastVersion already equals the running version, i.e. instances that
-// started this build before the migration shipped. Such migrations must be
-// idempotent: once-only semantics come from schema_version, not the version gate.
-// unconditionalMigration 由那些在 config/lastVersion 已等于运行版本时仍必须执行的迁移
-// 实现（即在本迁移落地前就启动过该版本的实例）。这类迁移必须自身幂等：只执行一次的
-// 保证来自 schema_version 表，而非版本门控。
-type unconditionalMigration interface {
-	Migration
-	// MigrationID identifies a repair independently of release version numbers.
-	MigrationID() string
-	// RunsUnconditionally reports whether the migration ignores the
-	// lastVersion gate.
-	// RunsUnconditionally 报告该迁移是否无视 lastVersion 门控。
-	RunsUnconditionally() bool
-}
-
-func migrationRecordKey(m Migration) string {
-	if repair, ok := m.(unconditionalMigration); ok {
-		return repair.MigrationID()
-	}
-	return m.Version()
-}
-
-// migrationRunsUnconditionally reports whether a migration opted out of the
-// lastVersion gate.
-// migrationRunsUnconditionally 报告迁移是否无视 lastVersion 门控。
-func migrationRunsUnconditionally(m Migration) bool {
-	if unconditional, ok := m.(unconditionalMigration); ok {
-		return unconditional.RunsUnconditionally()
-	}
-	return false
-}
-
 // MigrationContext 迁移上下文，包含迁移脚本需要的依赖
 type MigrationContext struct {
 	Logger       *zap.Logger
@@ -105,7 +71,7 @@ func NewMigrationManager(db *gorm.DB, logger *zap.Logger, version string, cfg, u
 			&NoteHistoryRenameMigrate{},
 			&UserEmailLowercaseMigrate{},
 			&BackupRetentionDefaultMigrate{},
-			&LegacyAutomationRuleMigrate{},
+			&AutomationRuleMigrate{},
 		},
 	}
 }
@@ -163,9 +129,8 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 	if !strings.HasPrefix(runningVersion, "v") {
 		runningVersion = "v" + runningVersion
 	}
-	// 如果 runningVersion <= lastVersion，通常跳过后续检查
-	// 例外：尚未记录的无条件迁移仍需执行（覆盖 lastVersion 已等于运行版本的实例）
-	if semver.Compare(runningVersion, lastVersion) <= 0 && !m.hasPendingUnconditionalMigration(appliedVersions) {
+	// 如果 runningVersion <= lastVersion，则跳过后续检查。
+	if semver.Compare(runningVersion, lastVersion) <= 0 {
 		m.logger.Info("skipping upgrade", zap.String("runningVersion", runningVersion), zap.String("lastVersion", lastVersion))
 		return nil
 	}
@@ -184,8 +149,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 		}
 
 		// 比较版本: 如果 migration.Version <= lastVersion, 则跳过
-		// 无条件迁移不受该门控约束，只由 schema_version 保证只执行一次
-		if !migrationRunsUnconditionally(migration) && semver.IsValid(lastVersion) && semver.IsValid(currentScriptVersion) {
+		if semver.IsValid(lastVersion) && semver.IsValid(currentScriptVersion) {
 			if semver.Compare(currentScriptVersion, lastVersion) <= 0 {
 				m.logger.Info("skip migration <= lastVersion",
 					zap.String("scriptVersion", scriptVersion),
@@ -195,7 +159,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 		}
 
 		// 检查是否已应用
-		if appliedVersions[migrationRecordKey(migration)] {
+		if appliedVersions[scriptVersion] {
 			continue
 		}
 
@@ -219,7 +183,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 
 			// 记录版本
 			record := &SchemaVersion{
-				Version:     migrationRecordKey(migration),
+				Version:     migration.Version(),
 				Description: migration.Description(),
 				AppliedAt:   time.Now(),
 			}
@@ -244,11 +208,6 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 
 	// 无论是否执行了升级，最后将当前 version 写入 config/lastVersion
 	// 作为下一次运行的基准
-	// Repair migrations may run on a downgraded binary. Never move the version
-	// watermark backwards and accidentally replay older migrations next startup.
-	if semver.Compare(runningVersion, lastVersion) < 0 {
-		return nil
-	}
 	if err := m.saveReferenceVersion(m.version); err != nil {
 		m.logger.Error("save lastVersion failed", zap.Error(err))
 		// 记录错误但不阻断启动
@@ -257,22 +216,6 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// hasPendingUnconditionalMigration reports whether any migration that opted out
-// of the lastVersion gate has not been recorded yet.
-// hasPendingUnconditionalMigration 报告是否存在尚未记录的无条件迁移。
-func (m *MigrationManager) hasPendingUnconditionalMigration(appliedVersions map[string]bool) bool {
-	for _, migration := range m.migrations {
-		if !migrationRunsUnconditionally(migration) {
-			continue
-		}
-		if appliedVersions[migrationRecordKey(migration)] {
-			continue
-		}
-		return true
-	}
-	return false
 }
 
 // getAppliedVersions 获取已应用的数据库版本
