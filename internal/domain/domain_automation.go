@@ -95,8 +95,12 @@ type AutomationTrigger struct {
 	Events    []AutomationEventRule
 	Actions   []AutomationAction
 	LastRunAt time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// LastAttemptAt records the last cron attempt, including failed attempts.
+	// It prevents a failed daily job from being retried every scheduler tick
+	// while LastRunAt remains the last successful execution.
+	LastAttemptAt time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // AutomationRepository stores user-owned automation triggers.
@@ -108,4 +112,5 @@ type AutomationRepository interface {
 	Save(ctx context.Context, trigger *AutomationTrigger, uid int64) (*AutomationTrigger, error)
 	Delete(ctx context.Context, id, uid int64) error
 	MarkRun(ctx context.Context, id, uid int64, at time.Time) error
+	MarkAttempt(ctx context.Context, id, uid int64, at time.Time) error
 }

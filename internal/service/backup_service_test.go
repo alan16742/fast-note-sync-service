@@ -58,7 +58,7 @@ func newBackupSvc(
 		vaultRepo:      vaultRepo,
 		storageService: storageSvc,
 		logger:         zap.NewNop(),
-		runningTasks:   make(map[string]context.CancelFunc),
+		runningTasks:   make(map[string]backupRunningTask),
 	}
 }
 

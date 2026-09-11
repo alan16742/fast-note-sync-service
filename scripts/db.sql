@@ -434,6 +434,7 @@ CREATE TABLE "automation_rule" (
     "events"      text NOT NULL DEFAULT '[]',
     "actions"     text NOT NULL DEFAULT '[]',
     "last_run_at" integer NOT NULL DEFAULT 0,
+    "last_attempt_at" integer NOT NULL DEFAULT 0,
     "created_at"  datetime DEFAULT NULL,
     "updated_at"  datetime DEFAULT NULL
 );

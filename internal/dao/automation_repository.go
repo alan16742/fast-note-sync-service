@@ -66,6 +66,10 @@ func automationToDomain(item *model.AutomationTrigger) (*domain.AutomationTrigge
 	if item.LastRunAt > 0 {
 		lastRunAt = time.Unix(item.LastRunAt, 0)
 	}
+	lastAttemptAt := time.Time{}
+	if item.LastAttemptAt > 0 {
+		lastAttemptAt = time.Unix(item.LastAttemptAt, 0)
+	}
 	matchMode := domain.AutomationMatchMode(item.MatchMode)
 	if matchMode == "" {
 		matchMode = domain.AutomationMatchAny
@@ -73,7 +77,7 @@ func automationToDomain(item *model.AutomationTrigger) (*domain.AutomationTrigge
 	return &domain.AutomationTrigger{
 		ID: item.ID, UID: item.UID, Name: item.Name, Enabled: item.Enabled == 1,
 		VaultID: item.VaultID, Timezone: item.Timezone, MatchMode: matchMode, Events: events,
-		Actions: actions, LastRunAt: lastRunAt,
+		Actions: actions, LastRunAt: lastRunAt, LastAttemptAt: lastAttemptAt,
 		CreatedAt: time.Time(item.CreatedAt), UpdatedAt: time.Time(item.UpdatedAt),
 	}, nil
 }
@@ -98,6 +102,10 @@ func automationToModel(item *domain.AutomationTrigger) (*model.AutomationTrigger
 	if !item.LastRunAt.IsZero() {
 		lastRunAt = item.LastRunAt.Unix()
 	}
+	lastAttemptAt := int64(0)
+	if !item.LastAttemptAt.IsZero() {
+		lastAttemptAt = item.LastAttemptAt.Unix()
+	}
 	matchMode := item.MatchMode
 	if matchMode == "" {
 		matchMode = domain.AutomationMatchAny
@@ -105,7 +113,7 @@ func automationToModel(item *domain.AutomationTrigger) (*model.AutomationTrigger
 	return &model.AutomationTrigger{
 		ID: item.ID, UID: item.UID, Name: item.Name, Enabled: enabled,
 		VaultID: item.VaultID, Timezone: item.Timezone, MatchMode: string(matchMode), Events: string(events), Actions: string(actions),
-		LastRunAt: lastRunAt, CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
+		LastRunAt: lastRunAt, LastAttemptAt: lastAttemptAt, CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
 	}, nil
 }
 
@@ -253,7 +261,18 @@ func (r *automationRepository) MarkRun(ctx context.Context, id, uid int64, at ti
 		return err
 	}
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ?", id, uid).Update("last_run_at", at.Unix()).Error
+		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ?", id, uid).Updates(map[string]any{
+			"last_run_at": at.Unix(), "last_attempt_at": at.Unix(),
+		}).Error
+	})
+}
+
+func (r *automationRepository) MarkAttempt(ctx context.Context, id, uid int64, at time.Time) error {
+	if _, err := r.db(ctx, uid); err != nil {
+		return err
+	}
+	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ?", id, uid).Update("last_attempt_at", at.Unix()).Error
 	})
 }
 

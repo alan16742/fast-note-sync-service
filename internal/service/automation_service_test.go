@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -147,6 +148,23 @@ func TestAutomationFromRequestRequiresExplicitActionsAndValidMatchMode(t *testin
 		Actions: []dto.AutomationActionDTO{{Type: domain.AutomationTargetWebhook, ConfigID: 1}},
 	}, 1); err == nil {
 		t.Fatal("all-mode should reject mixed event types")
+	}
+}
+
+func TestValidateAutomationEventCombination(t *testing.T) {
+	sameType := []domain.AutomationEventRule{
+		{Type: domain.AutomationEventNoteContent, ContentContains: "release"},
+		{Type: domain.AutomationEventNoteContent, ContentContains: "notes"},
+	}
+	if err := validateAutomationEventCombination("all", sameType); err != nil {
+		t.Fatalf("same-type all conditions rejected: %v", err)
+	}
+	if err := validateAutomationEventCombination("any", append(sameType[:1], domain.AutomationEventRule{Type: domain.AutomationEventFileBehavior})); err != nil {
+		t.Fatalf("mixed-type any conditions rejected: %v", err)
+	}
+	err := validateAutomationEventCombination("all", append(sameType[:1], domain.AutomationEventRule{Type: domain.AutomationEventFileBehavior}))
+	if err == nil || !strings.Contains(err.Error(), "use any (OR)") {
+		t.Fatalf("mixed-type all should explain the OR alternative, got %v", err)
 	}
 }
 

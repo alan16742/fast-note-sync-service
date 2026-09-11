@@ -33,19 +33,20 @@ type AutomationTriggerRequest struct {
 // AutomationTriggerDTO is the safe API representation of an automation
 // trigger. It intentionally contains no target credentials.
 type AutomationTriggerDTO struct {
-	ID        int64                    `json:"id"`
-	UID       int64                    `json:"uid"`
-	Name      string                   `json:"name"`
-	Enabled   bool                     `json:"enabled"`
-	VaultID   int64                    `json:"vaultId"`
-	Timezone  string                   `json:"timezone"`
-	MatchMode string                   `json:"matchMode"`
-	Events    []AutomationEventRuleDTO `json:"events"`
-	Actions   []AutomationActionDTO    `json:"actions"`
-	Warnings  []string                 `json:"warnings,omitempty"`
-	LastRunAt string                   `json:"lastRunAt,omitempty"`
-	CreatedAt string                   `json:"createdAt"`
-	UpdatedAt string                   `json:"updatedAt"`
+	ID            int64                    `json:"id"`
+	UID           int64                    `json:"uid"`
+	Name          string                   `json:"name"`
+	Enabled       bool                     `json:"enabled"`
+	VaultID       int64                    `json:"vaultId"`
+	Timezone      string                   `json:"timezone"`
+	MatchMode     string                   `json:"matchMode"`
+	Events        []AutomationEventRuleDTO `json:"events"`
+	Actions       []AutomationActionDTO    `json:"actions"`
+	Warnings      []string                 `json:"warnings,omitempty"`
+	LastRunAt     string                   `json:"lastRunAt,omitempty"`
+	LastAttemptAt string                   `json:"lastAttemptAt,omitempty"`
+	CreatedAt     string                   `json:"createdAt"`
+	UpdatedAt     string                   `json:"updatedAt"`
 }
 
 // AutomationRunRequest identifies a manual trigger to execute.

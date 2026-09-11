@@ -94,7 +94,7 @@ func (h *AutomationHandler) Trigger(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails(err.Error()))
 		return
 	}
-	response.ToResponse(code.Success.WithDetails("Automation trigger started"))
+	response.ToResponse(code.Success.WithDetails("Automation trigger completed"))
 }
 
 func (h *AutomationHandler) logError(c *gin.Context, method string, err error) {

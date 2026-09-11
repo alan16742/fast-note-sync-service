@@ -60,12 +60,18 @@ type gitSyncService struct {
 	gitConf     *appconfig.GitConfig
 	logger      *zap.Logger
 	mu          sync.Mutex
-	running     map[string]context.CancelFunc // target/trigger/vault execution context -> cancelFunc
+	running     map[string]gitRunningTask // target/trigger/vault execution context -> task
+	nextTaskID  uint64
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 	gcTimer     *time.Timer // Timer for delayed GC // 延迟 GC 定时器
 	gcMu        sync.Mutex  // Mutex for gcTimer // 保护 gcTimer 的互斥锁
+}
+
+type gitRunningTask struct {
+	cancel context.CancelFunc
+	id     uint64
 }
 
 // NewGitSyncService creates a GitSyncService instance
@@ -81,7 +87,7 @@ func NewGitSyncService(repo domain.GitSyncRepository, noteRepo domain.NoteReposi
 		settingRepo: settingRepo,
 		gitConf:     gitConf,
 		logger:      logger,
-		running:     make(map[string]context.CancelFunc),
+		running:     make(map[string]gitRunningTask),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -351,32 +357,47 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, e
 	// 策略：同步/镜像同步直接取消旧任务，启动新任务
 	key := fmt.Sprintf("%d:%d:%d", id, execution.TriggerID, execution.VaultID)
 	s.mu.Lock()
-	if oldCancel, running := s.running[key]; running {
+	if oldTask, running := s.running[key]; running {
 		s.logger.Info("Cancelling existing Git sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configId", id))
-		oldCancel()
+		oldTask.cancel()
 		delete(s.running, key)
 	}
 
-	// Create context for new task
-	// 为新任务创建 context
+	// Create a task context that follows both service shutdown and caller
+	// cancellation. A child of only one of them would leave the other path
+	// running indefinitely.
+	// 创建同时跟随服务关闭和调用方取消的任务 context；只从其中一个 context 派生，
+	// 会让另一条取消路径无法终止任务。
 	taskCtx, taskCancel := context.WithCancel(s.ctx)
-	s.running[key] = taskCancel
+	stopCallerCancellation := context.AfterFunc(ctx, taskCancel)
+	s.nextTaskID++
+	taskID := s.nextTaskID
+	s.running[key] = gitRunningTask{cancel: taskCancel, id: taskID}
 	s.mu.Unlock()
 
 	s.wg.Add(1)
-	// Run in background
+	result := make(chan error, 1)
+	// Run in background, but keep the result connected to the caller. The
+	// automation dispatcher uses this result to decide whether a cron run may be
+	// marked successful.
 	safego.Go(s.logger, func() {
+		var runErr error
 		defer func() {
+			if recovered := recover(); recovered != nil {
+				runErr = fmt.Errorf("git sync task panicked: %v", recovered)
+			}
 			s.mu.Lock()
 			// Ensure only the current cancel function is cleaned up
 			// 确保只清理当前的 cancel 函数
-			if _, ok := s.running[key]; ok {
+			if current, ok := s.running[key]; ok && current.id == taskID {
 				// 虽然 sync 策略下会先 cancel 再 set，但为了闭包内引用的严谨
 				delete(s.running, key)
 			}
 			s.mu.Unlock()
 			taskCancel()
+			stopCallerCancellation()
 			s.wg.Done()
+			result <- runErr
 		}()
 
 		// Use the newly created task context
@@ -386,10 +407,15 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, e
 		if latest := s.previousSyncRun(ctx, conf.ID, execution); !latest.IsZero() {
 			runConfig.LastSyncTime = &latest
 		}
-		s.syncTask(taskCtx, &runConfig, execution)
+		runErr = s.syncTask(taskCtx, &runConfig, execution)
 	})
 
-	return nil
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *gitSyncService) previousSyncRun(ctx context.Context, configID int64, execution *domain.AutomationExecutionContext) time.Time {
@@ -481,8 +507,8 @@ func (s *gitSyncService) Shutdown(ctx context.Context) error {
 	s.cancel()
 
 	s.mu.Lock()
-	for _, cancel := range s.running {
-		cancel()
+	for _, task := range s.running {
+		task.cancel()
 	}
 	s.mu.Unlock()
 
@@ -536,7 +562,7 @@ func (s *gitSyncService) getUserWorkspacePath(uid int64) string {
 	return filepath.Join("storage", "git_workspace", fmt.Sprintf("%d", uid))
 }
 
-func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfig, execution *domain.AutomationExecutionContext) {
+func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfig, execution *domain.AutomationExecutionContext) error {
 	startTime := time.Now()
 	s.logger.Info("Starting Git sync task", zap.Int64("configId", conf.ID), zap.Int64("uid", conf.UID))
 
@@ -554,11 +580,11 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	// Without writing history, without changing last_sync_time / last_status / last_message
 	// 无变更：恢复原始状态，只触发 Save 更新 updated_at
 	// 不写 history，不改 last_sync_time / last_status / last_message
-	if errors.Is(err, errNoChanges) {
+	if errors.Is(err, errNoChanges) && ctx.Err() == nil {
 		s.logger.Info("No changes found, skipping history and status update", zap.Int64("configId", conf.ID))
 		conf.LastStatus = prevStatus
 		_, _ = s.repo.Save(context.Background(), conf, conf.UID)
-		return
+		return nil
 	}
 
 	endTime := time.Now()
@@ -626,6 +652,10 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	// 任务结束后调度延迟内存释放 (针对 Issue #113)
 	// 高压同步结束后 30 分钟再归还虚拟内存给操作系统，避免频繁操作
 	s.scheduleGC()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 // scheduleGC schedules a delayed GC and FreeOSMemory call (debounced)

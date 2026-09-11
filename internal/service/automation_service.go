@@ -127,6 +127,7 @@ func (s *automationService) Save(ctx context.Context, uid int64, request *dto.Au
 		}
 		trigger.CreatedAt = old.CreatedAt
 		trigger.LastRunAt = old.LastRunAt
+		trigger.LastAttemptAt = old.LastAttemptAt
 	}
 	saved, err := s.repo.Save(ctx, trigger, uid)
 	if err != nil {
@@ -248,7 +249,7 @@ func (s *automationService) publishNow(ctx context.Context, event *domain.Automa
 			continue
 		}
 		s.enrichEvent(ctx, event)
-		if err := s.dispatchTrigger(context.Background(), trigger, event); err != nil {
+		if err := s.dispatchTrigger(ctx, trigger, event); err != nil {
 			s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.Error(err))
 		}
 	}
@@ -333,7 +334,11 @@ func (s *automationService) dispatchTrigger(ctx context.Context, trigger *domain
 			}
 			continue
 		}
-		if err := s.pool.SubmitAsync(context.Background(), submit); err != nil {
+		// Publish already runs outside the write request. Waiting here is
+		// intentional: a successful dispatch means every target action finished
+		// successfully, so cron can safely advance LastRunAt and manual callers
+		// receive the actual action error.
+		if err := s.pool.Submit(ctx, submit); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -399,13 +404,24 @@ func (s *automationService) pollTimeTriggers() {
 	}
 	now := time.Now()
 	for _, trigger := range triggers {
+		if err := validateAutomationEventCombination(string(trigger.MatchMode), trigger.Events); err != nil {
+			// Cron polling has its own schedule path and therefore does not pass
+			// through automationTriggerMatches. Revalidate persisted rules here so
+			// an old or externally-written mixed-type ALL rule cannot fire.
+			s.logger.Warn("skip invalid automation trigger", zap.Int64("triggerID", trigger.ID), zap.Error(err))
+			continue
+		}
 		location, err := time.LoadLocation(trigger.Timezone)
 		if err != nil {
 			location = time.Local
 		}
 		localNow := now.In(location)
-		last := trigger.LastRunAt.In(location)
-		if trigger.LastRunAt.IsZero() {
+		last := trigger.LastAttemptAt
+		if last.IsZero() {
+			last = trigger.LastRunAt
+		}
+		last = last.In(location)
+		if last.IsZero() {
 			last = localNow.Add(-time.Minute)
 		}
 		due := false
@@ -440,8 +456,15 @@ func (s *automationService) pollTimeTriggers() {
 			Action: "cron", Source: "automation_clock",
 		}
 		s.enrichEvent(s.ctx, event)
-		if err := s.dispatchTrigger(context.Background(), trigger, event); err != nil {
+		if err := s.dispatchTrigger(s.ctx, trigger, event); err != nil {
 			s.logger.Warn("dispatch time automation trigger failed", zap.Int64("triggerID", trigger.ID), zap.Error(err))
+			// Queue saturation/closure means no action was attempted; leave the
+			// cursor untouched so the next scheduler tick can retry promptly.
+			if !errors.Is(err, workerpool.ErrWorkerPoolFull) && !errors.Is(err, workerpool.ErrWorkerPoolClosed) && !errors.Is(err, workerpool.ErrTaskCancelled) && !errors.Is(err, context.Canceled) {
+				if markErr := s.repo.MarkAttempt(s.ctx, trigger.ID, trigger.UID, now); markErr != nil {
+					s.logger.Warn("mark automation trigger attempt failed", zap.Int64("triggerID", trigger.ID), zap.Error(markErr))
+				}
+			}
 			continue
 		}
 		if err := s.repo.MarkRun(s.ctx, trigger.ID, trigger.UID, now); err != nil {
@@ -556,12 +579,8 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		seenEvents[string(key)] = struct{}{}
 		events = append(events, rule)
 	}
-	if matchMode == string(domain.AutomationMatchAll) && len(events) > 1 {
-		for _, event := range events[1:] {
-			if event.Type != events[0].Type {
-				return nil, errors.New("all event branches must use the same event type")
-			}
-		}
+	if err := validateAutomationEventCombination(matchMode, events); err != nil {
+		return nil, err
 	}
 	timezone := strings.TrimSpace(request.Timezone)
 	if needsTimezone {
@@ -607,6 +626,24 @@ func automationFromRequest(request *dto.AutomationTriggerRequest, uid int64) (*d
 		ID: request.ID, UID: uid, Name: name, Enabled: request.Enabled,
 		VaultID: request.VaultID, Timezone: timezone, MatchMode: domain.AutomationMatchMode(matchMode), Events: events, Actions: actions,
 	}, nil
+}
+
+// validateAutomationEventCombination keeps the stateless event matcher honest:
+// one AutomationEvent represents one event type, so ALL can only combine
+// predicates evaluated against that same event. Different event types are
+// alternatives and must use ANY; supporting cross-type ALL would require an
+// explicit correlation/window state machine.
+func validateAutomationEventCombination(matchMode string, events []domain.AutomationEventRule) error {
+	if matchMode != string(domain.AutomationMatchAll) || len(events) < 2 {
+		return nil
+	}
+	first := events[0].Type
+	for _, event := range events[1:] {
+		if event.Type != first {
+			return errors.New("all mode only supports conditions of one event type; use any (OR) for different event types")
+		}
+	}
+	return nil
 }
 
 func normalizeAutomationMatchMode(value string) string {
@@ -766,6 +803,9 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 	}
 	if !trigger.LastRunAt.IsZero() {
 		result.LastRunAt = trigger.LastRunAt.Format(time.RFC3339)
+	}
+	if !trigger.LastAttemptAt.IsZero() {
+		result.LastAttemptAt = trigger.LastAttemptAt.Format(time.RFC3339)
 	}
 	return result
 }

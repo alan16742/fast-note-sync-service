@@ -57,8 +57,14 @@ type backupService struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	runningTasks   map[string]context.CancelFunc // key: target/trigger/vault execution context
+	runningTasks   map[string]backupRunningTask // key: target/trigger/vault execution context
+	nextTaskID     uint64
 	runningMu      sync.Mutex
+}
+
+type backupRunningTask struct {
+	cancel context.CancelFunc
+	id     uint64
 }
 
 // NewBackupService creates BackupService instance
@@ -88,7 +94,7 @@ func NewBackupService(
 		storageConfig:  storageConfig,
 		tempPath:       tempPath,
 		logger:         logger,
-		runningTasks:   make(map[string]context.CancelFunc),
+		runningTasks:   make(map[string]backupRunningTask),
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -403,9 +409,20 @@ func (s *backupService) ExecuteUserBackup(ctx context.Context, uid int64, config
 	}
 	// Record error and propagate it back so the API layer can surface failures to the UI
 	// 记录错误并向上抛出，便于 API 层将失败状态展示到 UI（避免弹窗"假成功"）
-	if err := s.handleBackupSync(ctx, config, execution, true); err != nil {
+	// Keep the task cancellable by both the service lifecycle and the caller.
+	serviceCtx := s.ctx
+	if serviceCtx == nil {
+		serviceCtx = context.Background()
+	}
+	taskCtx, taskCancel := context.WithCancel(serviceCtx)
+	stopCallerCancellation := context.AfterFunc(ctx, taskCancel)
+	defer func() {
+		stopCallerCancellation()
+		taskCancel()
+	}()
+	if err := s.handleBackupSync(taskCtx, config, execution, true); err != nil {
 		// Service shutdown errors bypass finishTask and are not persisted to history
-		if s.ctx.Err() != nil {
+		if serviceCtx.Err() != nil {
 			return err
 		}
 		s.logger.Warn("Manual backup completed with errors",
@@ -477,12 +494,12 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	// 1. Concurrency conflict handling strategy
 	// 1. 并发冲突处理策略
 	s.runningMu.Lock()
-	if cancel, running := s.runningTasks[executionKey]; running {
+	if oldTask, running := s.runningTasks[executionKey]; running {
 		if hasSync {
 			// Sync task strategy: cancel old task, execute new one
 			// 同步任务策略：取消旧任务，执行新任务
 			s.logger.Info("Cancelling existing sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configID", configID))
-			cancel()
+			oldTask.cancel()
 			delete(s.runningTasks, executionKey)
 		} else {
 			// Full/Incremental backup strategy: keep old task, ignore new one
@@ -496,14 +513,16 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	// Create context with cancel function
 	// 创建带取消功能的 context
 	taskCtx, taskCancel := context.WithCancel(ctx)
-	s.runningTasks[executionKey] = taskCancel
+	s.nextTaskID++
+	taskID := s.nextTaskID
+	s.runningTasks[executionKey] = backupRunningTask{cancel: taskCancel, id: taskID}
 	s.runningMu.Unlock()
 
 	// Cleanup on task finish
 	// 任务结束时的清理
 	defer func() {
 		s.runningMu.Lock()
-		if _, ok := s.runningTasks[executionKey]; ok {
+		if current, ok := s.runningTasks[executionKey]; ok && current.id == taskID {
 			// Ensure current cancel record is cleaned up
 			// 确保清理当前的 cancel 记录
 			delete(s.runningTasks, executionKey)
@@ -822,7 +841,7 @@ func (s *backupService) runSync(ctx context.Context, config *domain.BackupConfig
 func (s *backupService) finishTask(ctx context.Context, config *domain.BackupConfig, execution *domain.AutomationExecutionContext, err error, fileCount, fileSize int64, startTime time.Time) error {
 	config.LastRunTime = startTime // Update last run time // 更新最后执行时间
 
-	if s.ctx.Err() != nil {
+	if s.ctx != nil && s.ctx.Err() != nil {
 		// Service shutdown or context cancelled
 		config.LastStatus = domain.BackupStatusStopped // 4: Stopped // 4: 停止
 		config.LastMessage = "Backup stopped by system"
