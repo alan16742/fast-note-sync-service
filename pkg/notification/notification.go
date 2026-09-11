@@ -8,10 +8,12 @@ type Message struct {
 	Short string
 	Tags  string
 	Group string
-	URL   string
-	Level string
+	// ObsidianURI is the `obsidian://open?...` link to the note, exposed to
+	// templates as {{ob_uri}}. It is the notification link, not the delivery
+	// endpoint.
+	ObsidianURI string
+	Level       string
 	// Endpoint is an optional rendered delivery endpoint for custom webhooks.
-	// URL remains the notification link, not the delivery endpoint.
 	Endpoint string
 }
 

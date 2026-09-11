@@ -257,13 +257,13 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	}
 	location, _ := time.LoadLocation(current.Timezone)
 	due := time.Unix(job.OccurrenceAt, 0).In(location).Format(reminder.DateLayout)
-	link := "obsidian://open?" + url.Values{"vault": {vault.Name}, "file": {note.Path}}.Encode()
+	obsidianURI := "obsidian://open?" + url.Values{"vault": {vault.Name}, "file": {note.Path}}.Encode()
 	var firstErr error
 	for _, action := range trigger.Actions {
 		if action.Type != domain.AutomationTargetWebhook {
 			continue
 		}
-		if err := s.webhooks.DeliverReminder(ctx, job.UID, action.ConfigID, current.Title, due, current.Timezone, vault.Name, note.Path, note.Content, link); err != nil && firstErr == nil {
+		if err := s.webhooks.DeliverReminder(ctx, job.UID, action.ConfigID, current.Text, due, current.Timezone, vault.Name, note.Path, note.Content, obsidianURI); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

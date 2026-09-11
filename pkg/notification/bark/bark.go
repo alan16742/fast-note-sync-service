@@ -49,6 +49,6 @@ func (s *Sender) Send(ctx context.Context, endpoint, credential string, message 
 		Group     string `json:"group,omitempty"`
 		URL       string `json:"url,omitempty"`
 		Level     string `json:"level,omitempty"`
-	}{strings.TrimSpace(credential), message.Title, message.Body, message.Group, message.URL, message.Level}
+	}{strings.TrimSpace(credential), message.Title, message.Body, message.Group, message.ObsidianURI, message.Level}
 	return notification.PostJSON(ctx, s.client, endpoint, payload, 200)
 }

@@ -15,8 +15,8 @@ import (
 const (
 	defaultNoteTitleTemplate     = "Fast Note Sync: {{action}} {{path}}"
 	defaultNoteBodyTemplate      = "- Vault: {{vault}}\n- Action: {{action}}\n- Path: {{path}}\n\n{{content}}"
-	defaultReminderTitleTemplate = "{{title}}"
-	defaultReminderBodyTemplate  = "{{title}}\n到期：{{due}} ({{timezone}})\n笔记：{{vault}} / {{path}}"
+	defaultReminderTitleTemplate = "{{task}}"
+	defaultReminderBodyTemplate  = "{{task}}\n到期：{{due}} ({{timezone}})\n笔记：{{vault}} / {{path}}"
 	maxNotificationBodyBytes     = 8192
 )
 
@@ -110,7 +110,7 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 		"path":           path,
 		"old_path":       event.OldPath,
 		"action":         string(event.Action),
-		"title":          "",
+		"task":           "",
 		"due":            "",
 		"timezone":       "",
 		"changed_fields": strings.Join(event.ChangedFields, ", "),
@@ -118,7 +118,7 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 		"client":         event.ClientType,
 		"client_name":    event.ClientName,
 		"client_version": event.ClientVersion,
-		"url":            "",
+		"ob_uri":         "",
 	}
 	return notification.Message{
 		Title:    renderNotificationTemplate(titleTemplate, values),
@@ -127,10 +127,13 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 	}
 }
 
-func messageForReminder(subscription *domain.WebhookSubscription, title, due, timezone, vault, path, content, link string) notification.Message {
+// messageForReminder renders a task reminder. task is the todo item text
+// (`xxx` in `- [ ] xxx @(...)`), not the message title; content is the whole
+// note body and due/timezone describe the scheduled occurrence.
+func messageForReminder(subscription *domain.WebhookSubscription, task, due, timezone, vault, path, content, obsidianURI string) notification.Message {
 	titleTemplate, bodyTemplate := notificationTemplates(subscription, true)
 	values := map[string]string{
-		"title":          title,
+		"task":           task,
 		"due":            due,
 		"timezone":       timezone,
 		"vault":          vault,
@@ -143,16 +146,16 @@ func messageForReminder(subscription *domain.WebhookSubscription, title, due, ti
 		"client":         "",
 		"client_name":    "",
 		"client_version": "",
-		"url":            link,
+		"ob_uri":         obsidianURI,
 	}
 	return notification.Message{
-		Title:    renderNotificationTemplate(titleTemplate, values),
-		Body:     limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
-		Short:    "到期：" + due,
-		Tags:     "待办",
-		Group:    vault,
-		URL:      link,
-		Endpoint: renderNotificationEndpoint(subscriptionURL(subscription), values),
+		Title:       renderNotificationTemplate(titleTemplate, values),
+		Body:        limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Short:       "到期：" + due,
+		Tags:        "待办",
+		Group:       vault,
+		ObsidianURI: obsidianURI,
+		Endpoint:    renderNotificationEndpoint(subscriptionURL(subscription), values),
 	}
 }
 

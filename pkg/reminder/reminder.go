@@ -29,8 +29,11 @@ var scheduleMetadata = regexp.MustCompile(`@\(([^()]*)\)`)
 var offsetPattern = regexp.MustCompile(`^([+-]?)([0-9]+)([dhm])$`)
 
 type Task struct {
-	Key       string     `json:"key"`
-	Title     string     `json:"title"`
+	Key string `json:"key"`
+	// Text is the task line without its @(...) annotation and markup, i.e. the
+	// `xxx` in `- [ ] xxx @(2026-09-06 22:45)`. It is what notification
+	// templates expose as {{task}}.
+	Text      string     `json:"text"`
 	Completed bool       `json:"completed"`
 	Due       time.Time  `json:"due"`
 	Remind    []int64    `json:"remind"`
@@ -95,10 +98,10 @@ func Parse(markdown, timezone string) ([]Task, []error) {
 			return ast.WalkContinue, nil
 		}
 		match := scheduleMatches[0]
-		title := removeRanges(value, []textRange{{start: match[0], end: match[1]}})
-		task, err := parseFields(value[match[2]:match[3]], title, timezone)
+		text := removeRanges(value, []textRange{{start: match[0], end: match[1]}})
+		task, err := parseFields(value[match[2]:match[3]], text, timezone)
 		if err != nil {
-			issues = append(issues, fmt.Errorf("task %q: %w", title, err))
+			issues = append(issues, fmt.Errorf("task %q: %w", text, err))
 			return ast.WalkContinue, nil
 		}
 		keyData, _ := json.Marshal(task)
@@ -123,7 +126,7 @@ func removeRanges(value string, ranges []textRange) string {
 	return strings.TrimSpace(value)
 }
 
-func parseFields(raw, title, timezone string) (Task, error) {
+func parseFields(raw, text, timezone string) (Task, error) {
 	fields := map[string]string{}
 	parts := strings.Split(raw, ";")
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
@@ -164,7 +167,7 @@ func parseFields(raw, title, timezone string) (Task, error) {
 	if err != nil {
 		return Task{}, fmt.Errorf("date: %w", err)
 	}
-	task := Task{Title: title, Due: due, Timezone: timezone, Remind: []int64{0}}
+	task := Task{Text: text, Due: due, Timezone: timezone, Remind: []int64{0}}
 	if rawOffsets, exists := fields["remind"]; exists {
 		if rawOffsets == "" {
 			return Task{}, errors.New("remind must not be empty")

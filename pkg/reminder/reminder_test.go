@@ -24,7 +24,7 @@ func at(t *testing.T, value string) time.Time {
 func TestParseTaskSemantics(t *testing.T) {
 	task := parseOne(t, "* [ ] 测试 **待办** @(2026-09-06 22:45; remind=+1h,0,-1h,0; tz=Asia/Shanghai)")
 	require.Equal(t, []int64{-3600, 0, 3600}, task.Remind)
-	require.Equal(t, "测试 待办", task.Title)
+	require.Equal(t, "测试 待办", task.Text)
 	require.True(t, at(t, "2026-09-06T22:45:00+08:00").Equal(task.Due))
 	tasks, issues := Parse("```text\n- [ ] example @(2026-09-06 22:45)\n```\n\n> - [ ] quoted @(2026-09-06 22:45)\n\n- [ ] Inline `@(2026-09-06 22:45)`\n\n- [x] done @(2026-09-06 22:45)", "Asia/Shanghai")
 	require.Empty(t, issues)

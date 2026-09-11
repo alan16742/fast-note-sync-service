@@ -32,7 +32,7 @@ type WebhookService interface {
 	Save(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) (*dto.WebhookSubscriptionDTO, error)
 	Delete(ctx context.Context, uid, id int64) error
 	DeliverEvent(ctx context.Context, uid, id int64, event *domain.ContentChangeEvent) error
-	DeliverReminder(ctx context.Context, uid, id int64, title, due, timezone, vault, path, content, link string) error
+	DeliverReminder(ctx context.Context, uid, id int64, task, due, timezone, vault, path, content, obsidianURI string) error
 	Test(ctx context.Context, uid, id int64) error
 	TestRequest(ctx context.Context, uid int64, request *dto.WebhookSubscriptionRequest) error
 }
@@ -156,7 +156,7 @@ func (s *webhookService) DeliverEvent(ctx context.Context, uid, id int64, event 
 // DeliverReminder sends a task reminder through one configured notification
 // target. The reminder trigger owns scheduling and timezone; the channel only
 // owns credentials and transport.
-func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, title, due, timezone, vault, path, content, link string) error {
+func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, task, due, timezone, vault, path, content, obsidianURI string) error {
 	if id <= 0 {
 		return errors.New("webhook subscription id is required")
 	}
@@ -173,7 +173,7 @@ func (s *webhookService) DeliverReminder(ctx context.Context, uid, id int64, tit
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, notification.Timeout)
 	defer cancel()
-	return sendNotification(sendCtx, sender, subscription, messageForReminder(subscription, title, due, timezone, vault, path, content, link))
+	return sendNotification(sendCtx, sender, subscription, messageForReminder(subscription, task, due, timezone, vault, path, content, obsidianURI))
 }
 
 // Test sends a synthetic message through a saved subscription.

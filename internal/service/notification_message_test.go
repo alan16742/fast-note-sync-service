@@ -24,7 +24,7 @@ func TestMessageForNoteEventRendersCustomTemplates(t *testing.T) {
 		Content:   "content",
 	}, &domain.WebhookSubscription{
 		TitleTemplate: "{{action}}: {{path}}",
-		BodyTemplate:  "{{vault}}|{{old_path}}|{{content}}|{{title}}",
+		BodyTemplate:  "{{vault}}|{{old_path}}|{{content}}|{{task}}",
 	})
 	assert.Equal(t, "rename: new.md", message.Title)
 	assert.Equal(t, "vault|old.md|content|", message.Body)
@@ -55,8 +55,8 @@ func TestMessageForNoteEventRendersEndpointTemplate(t *testing.T) {
 
 func TestMessageForReminderRendersCustomTemplates(t *testing.T) {
 	message := messageForReminder(&domain.WebhookSubscription{
-		TitleTemplate: "{{title}} @ {{due}}",
-		BodyTemplate:  "{{vault}}/{{path}} {{url}} {{content}}",
+		TitleTemplate: "{{task}} @ {{due}}",
+		BodyTemplate:  "{{vault}}/{{path}} {{ob_uri}} {{content}}",
 	}, "todo", "2026-01-01 09:00", "Asia/Shanghai", "vault", "todo.md", "note", "obsidian://open")
 	assert.Equal(t, "todo @ 2026-01-01 09:00", message.Title)
 	assert.Equal(t, "vault/todo.md obsidian://open note", message.Body)

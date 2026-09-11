@@ -23,7 +23,7 @@ func TestSendJSONUsesBodyKeyAndProviderCode(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":200,"message":"success"}`))
 	}))
 	defer server.Close()
-	require.NoError(t, NewClient(server.Client()).Send(context.Background(), server.URL+"/custom/", "device-key", notification.Message{Title: "title", Body: "中文正文", Group: "vault", URL: "obsidian://open"}))
+	require.NoError(t, NewClient(server.Client()).Send(context.Background(), server.URL+"/custom/", "device-key", notification.Message{Title: "title", Body: "中文正文", Group: "vault", ObsidianURI: "obsidian://open"}))
 }
 
 func TestEndpointDefaultAndValidation(t *testing.T) {

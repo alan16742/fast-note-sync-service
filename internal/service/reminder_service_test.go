@@ -117,7 +117,7 @@ func TestReminderPersistenceCompletionAndTenantIsolation(t *testing.T) {
 	require.NoError(t, env.svc.Tick(ctx, due))
 	require.Len(t, env.sender.calls, 1)
 	require.Equal(t, "todo", env.sender.calls[0].Title)
-	require.Contains(t, env.sender.calls[0].URL, "obsidian://open?")
+	require.Contains(t, env.sender.calls[0].ObsidianURI, "obsidian://open?")
 	restarted := NewReminderService(reminderUsers{}, env.vaults, env.source, env.triggers, NewWebhookService(env.webhooks), env.jobs, zap.NewNop())
 	restarted.webhooks.(*webhookService).senders["bark"] = env.sender
 	require.NoError(t, restarted.Tick(ctx, due.Add(time.Second)))
@@ -190,9 +190,9 @@ func TestReminderLeasePreventsConcurrentDelivery(t *testing.T) {
 
 func TestWebhookRepositoryContextAndRoundTrip(t *testing.T) {
 	env := newReminderTestEnv(t)
-	item, err := NewWebhookService(env.webhooks).Save(context.Background(), 1, &dto.WebhookSubscriptionRequest{Provider: "bark", Secret: "new-key", TitleTemplate: "{{title}}", BodyTemplate: "{{vault}}/{{path}}"})
+	item, err := NewWebhookService(env.webhooks).Save(context.Background(), 1, &dto.WebhookSubscriptionRequest{Provider: "bark", Secret: "new-key", TitleTemplate: "{{task}}", BodyTemplate: "{{vault}}/{{path}}"})
 	require.NoError(t, err)
-	require.Equal(t, "{{title}}", item.TitleTemplate)
+	require.Equal(t, "{{task}}", item.TitleTemplate)
 	require.Equal(t, "{{vault}}/{{path}}", item.BodyTemplate)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
