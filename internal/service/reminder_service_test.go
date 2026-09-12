@@ -12,6 +12,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/notification"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -80,7 +81,9 @@ func newReminderTestEnv(t *testing.T) *reminderTestEnv {
 	cfg := config.DatabaseConfig{Type: "sqlite", Path: filepath.Join(t.TempDir(), "db.sqlite3"), EnableWriteQueue: &queue}
 	db, err := dao.NewEngine(cfg, zap.NewNop())
 	require.NoError(t, err)
-	d := dao.New(db, ctx, dao.WithConfig(&cfg), dao.WithUserDatabaseConfig(&cfg), dao.WithLogger(zap.NewNop()))
+	encryptor, err := util.NewDataEncryptor("reminder test database key-fixture-0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	d := dao.New(db, ctx, dao.WithConfig(&cfg), dao.WithUserDatabaseConfig(&cfg), dao.WithLogger(zap.NewNop()), dao.WithDataEncryptor(encryptor))
 	t.Cleanup(func() {
 		for _, key := range []string{"", "user_webhook_1", "user_automation_1", "user_reminder_1", "user_webhook_2", "user_automation_2", "user_reminder_2"} {
 			if sqlDB, err := d.ResolveDB(key).DB(); err == nil {

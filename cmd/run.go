@@ -52,13 +52,19 @@ func init() {
 					runEnv.config = "config/config.yaml"
 
 					configDefault = strings.Replace(configDefault, "fast-note-sync-Auth-Token", util.GetRandomString(32), 1)
+					dataKey, err := util.GenerateDataEncryptionKey()
+					if err != nil {
+						bootstrapLogger.Error("generate database encryption key", zap.Error(err))
+						return
+					}
+					configDefault = strings.Replace(configDefault, `data-encryption-key: ""`, `data-encryption-key: "`+dataKey+`"`, 1)
 
 					if err := fileurl.CreatePath(runEnv.config, os.ModePerm); err != nil {
 						bootstrapLogger.Error("config file auto create error", zap.Error(err))
 						return
 					}
 
-					file, err := os.OpenFile(runEnv.config, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+					file, err := os.OpenFile(runEnv.config, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 					if err != nil {
 						bootstrapLogger.Error("config file auto create error", zap.Error(err))
 						return

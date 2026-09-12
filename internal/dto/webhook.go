@@ -14,15 +14,16 @@ type WebhookSubscriptionRequest struct {
 
 // WebhookSubscriptionDTO is the safe API representation; the secret is never returned.
 type WebhookSubscriptionDTO struct {
-	ID            int64             `json:"id"`
-	UID           int64             `json:"uid"`
-	Provider      string            `json:"provider"`
-	URL           string            `json:"url"`
-	Method        string            `json:"method"`
-	Headers       map[string]string `json:"headers"`
-	HasSecret     bool              `json:"hasSecret"`
-	TitleTemplate string            `json:"titleTemplate"`
-	BodyTemplate  string            `json:"bodyTemplate"`
-	CreatedAt     string            `json:"createdAt"`
-	UpdatedAt     string            `json:"updatedAt"`
+	ProtectedHeaders []string          `json:"protectedHeaders"` // Names with saved sensitive values; values are never returned.
+	ID               int64             `json:"id"`
+	UID              int64             `json:"uid"`
+	Provider         string            `json:"provider"`
+	URL              string            `json:"url"`
+	Method           string            `json:"method"`
+	Headers          map[string]string `json:"headers"`
+	HasSecret        bool              `json:"hasSecret"`
+	TitleTemplate    string            `json:"titleTemplate"`
+	BodyTemplate     string            `json:"bodyTemplate"`
+	CreatedAt        string            `json:"createdAt"`
+	UpdatedAt        string            `json:"updatedAt"`
 }

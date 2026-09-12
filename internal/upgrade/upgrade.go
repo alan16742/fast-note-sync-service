@@ -10,6 +10,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/config"
 	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 
 	"go.uber.org/zap"
 	"golang.org/x/mod/semver"
@@ -38,20 +39,23 @@ type Migration interface {
 
 // MigrationContext 迁移上下文，包含迁移脚本需要的依赖
 type MigrationContext struct {
-	Logger       *zap.Logger
-	DatabasePath string   // 数据库文件路径（用于 SQLite）
-	DatabaseType string   // 数据库类型
-	Dao          *dao.Dao // Dao 实例，用于处理租户/用户库
+	Logger           *zap.Logger
+	DatabasePath     string             // 数据库文件路径（用于 SQLite）
+	DatabaseType     string             // 数据库类型
+	UserDatabaseType string             // User database type; may differ from main database
+	Dao              *dao.Dao           // Dao 实例，用于处理租户/用户库
+	DataProtector    *dao.DataProtector // Sensitive database value transformer
 }
 
 // MigrationManager 升级管理器
 type MigrationManager struct {
-	db         *gorm.DB
-	logger     *zap.Logger
-	version    string                 // 当前运行版本
-	config     *config.DatabaseConfig // 主数据库配置
-	userConfig *config.DatabaseConfig // 用户数据库配置
-	migrations []Migration
+	db            *gorm.DB
+	logger        *zap.Logger
+	version       string                 // 当前运行版本
+	config        *config.DatabaseConfig // 主数据库配置
+	userConfig    *config.DatabaseConfig // 用户数据库配置
+	dataEncryptor *util.DataEncryptor
+	migrations    []Migration
 }
 
 // NewMigrationManager 创建升级管理器
@@ -60,18 +64,23 @@ type MigrationManager struct {
 // version: 当前运行版本（必须）
 // dbPath: 数据库文件路径（SQLite 需要）
 // dbType: 数据库类型
-func NewMigrationManager(db *gorm.DB, logger *zap.Logger, version string, cfg, userCfg *config.DatabaseConfig) *MigrationManager {
+func NewMigrationManager(db *gorm.DB, logger *zap.Logger, version string, cfg, userCfg *config.DatabaseConfig, encryptors ...*util.DataEncryptor) *MigrationManager {
+	var dataEncryptor *util.DataEncryptor
+	if len(encryptors) > 0 {
+		dataEncryptor = encryptors[0]
+	}
 	return &MigrationManager{
-		db:         db,
-		logger:     logger,
-		version:    version,
-		config:     cfg,
-		userConfig: userCfg,
+		db:            db,
+		logger:        logger,
+		version:       version,
+		config:        cfg,
+		userConfig:    userCfg,
+		dataEncryptor: dataEncryptor,
 		migrations: []Migration{
 			&NoteHistoryRenameMigrate{},
 			&UserEmailLowercaseMigrate{},
 			&BackupRetentionDefaultMigrate{},
-			&AutomationRuleMigrate{},
+			&Release370Migrate{},
 		},
 	}
 }
@@ -79,12 +88,23 @@ func NewMigrationManager(db *gorm.DB, logger *zap.Logger, version string, cfg, u
 // Run 执行升级
 func (m *MigrationManager) Run(ctx context.Context) error {
 	m.logger.Info("Migration started")
+	if m.dataEncryptor == nil {
+		if m.config == nil {
+			return fmt.Errorf("database configuration is required to initialize data encryption")
+		}
+		var err error
+		m.dataEncryptor, err = util.NewDataEncryptor(m.config.DataEncryptionKey)
+		if err != nil {
+			return fmt.Errorf("initialize database data encryption from config: %w", err)
+		}
+	}
 
 	// 初始化 Dao
 	d := dao.New(m.db, ctx,
 		dao.WithConfig(m.config),
 		dao.WithUserDatabaseConfig(m.userConfig),
 		dao.WithLogger(m.logger),
+		dao.WithDataEncryptor(m.dataEncryptor),
 	)
 
 	// 使用提供的主配置和用户配置初始化 DBUtils
@@ -92,6 +112,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 		dao.WithConfig(m.config),
 		dao.WithUserDatabaseConfig(m.userConfig),
 		dao.WithLogger(m.logger),
+		dao.WithDataEncryptor(m.dataEncryptor),
 	)
 	err := dbUtils.ExposeAutoMigrate()
 	if err != nil {
@@ -129,16 +150,24 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 	if !strings.HasPrefix(runningVersion, "v") {
 		runningVersion = "v" + runningVersion
 	}
-	// 如果 runningVersion <= lastVersion，则跳过后续检查。
-	if semver.Compare(runningVersion, lastVersion) <= 0 {
+	// The release watermark is only an optimization. If the database does not
+	// contain the 3.7.0 release record yet, the sensitive-data migration must
+	// still run even when a pre-release process already wrote the watermark.
+	releasePending := !appliedVersions[release370Version]
+	if semver.Compare(runningVersion, lastVersion) <= 0 && !releasePending {
 		m.logger.Info("skipping upgrade", zap.String("runningVersion", runningVersion), zap.String("lastVersion", lastVersion))
 		return nil
 	}
 
 	// 执行所有未执行的升级
 	executed := 0
+	seenMigrationVersions := make(map[string]struct{}, len(m.migrations))
 	for _, migration := range m.migrations {
 		scriptVersion := migration.Version()
+		if _, exists := seenMigrationVersions[scriptVersion]; exists {
+			return fmt.Errorf("duplicate migration version %s", scriptVersion)
+		}
+		seenMigrationVersions[scriptVersion] = struct{}{}
 
 		// [NEW] Prioritize matching against lastVersion
 		// 比较版本: 如果 migration.Version > lastVersion, 则跳过
@@ -149,7 +178,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 		}
 
 		// 比较版本: 如果 migration.Version <= lastVersion, 则跳过
-		if semver.IsValid(lastVersion) && semver.IsValid(currentScriptVersion) {
+		if semver.IsValid(lastVersion) && semver.IsValid(currentScriptVersion) && scriptVersion != release370Version {
 			if semver.Compare(currentScriptVersion, lastVersion) <= 0 {
 				m.logger.Info("skip migration <= lastVersion",
 					zap.String("scriptVersion", scriptVersion),
@@ -174,7 +203,14 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 				Logger:       m.logger,
 				DatabasePath: m.config.Path,
 				DatabaseType: m.config.Type,
-				Dao:          d,
+				UserDatabaseType: func() string {
+					if m.userConfig != nil && m.userConfig.Type != "" {
+						return m.userConfig.Type
+					}
+					return m.config.Type
+				}(),
+				Dao:           d,
+				DataProtector: d.DataProtector(),
 			}
 			// 执行升级脚本
 			if err := migration.Up(tx, ctx, mc); err != nil {
@@ -210,7 +246,7 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 	// 作为下一次运行的基准
 	if err := m.saveReferenceVersion(m.version); err != nil {
 		m.logger.Error("save lastVersion failed", zap.Error(err))
-		// 记录错误但不阻断启动
+		return fmt.Errorf("save lastVersion failed: %w", err)
 	} else {
 		m.logger.Info("save lastVersion success", zap.String("ver", m.version))
 	}
@@ -270,7 +306,7 @@ func (m *MigrationManager) saveReferenceVersion(version string) error {
 // version: 当前运行版本
 // dbPath: 数据库文件路径
 // dbType: 数据库类型
-func Execute(db *gorm.DB, logger *zap.Logger, version string, cfg, userCfg *config.DatabaseConfig) error {
+func Execute(db *gorm.DB, logger *zap.Logger, version string, cfg, userCfg *config.DatabaseConfig, encryptors ...*util.DataEncryptor) error {
 	if db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -278,6 +314,6 @@ func Execute(db *gorm.DB, logger *zap.Logger, version string, cfg, userCfg *conf
 		return fmt.Errorf("logger not initialized")
 	}
 
-	manager := NewMigrationManager(db, logger, version, cfg, userCfg)
+	manager := NewMigrationManager(db, logger, version, cfg, userCfg, encryptors...)
 	return manager.Run(context.Background())
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/fileurl"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/haierkeys/fast-note-sync-service/pkg/workerpool"
 	"github.com/haierkeys/fast-note-sync-service/pkg/writequeue"
 	"golang.org/x/mod/semver"
@@ -60,13 +61,13 @@ type App struct {
 // db: 数据库连接（必须）
 // efs: frontend files embedded file system
 // efs: 前端文件嵌入文件系统
-func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App, error) {
+func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS, encryptors ...*util.DataEncryptor) (*App, error) {
 	if cfg == nil || logger == nil || db == nil {
 		return nil, fmt.Errorf("config, logger and db are required")
 	}
 
 	// 1. Initialize Infrastructure
-	infra, err := initInfra(cfg, logger, db)
+	infra, err := initInfra(cfg, logger, db, encryptors...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize infra: %w", err)
 	}

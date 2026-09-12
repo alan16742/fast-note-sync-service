@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/dao"
@@ -27,7 +28,21 @@ type Infra struct {
 }
 
 // initInfra initializes infrastructure components
-func initInfra(cfg *AppConfig, logger *zap.Logger, db *gorm.DB) (*Infra, error) {
+func initInfra(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, encryptors ...*util.DataEncryptor) (*Infra, error) {
+	var dataEncryptor *util.DataEncryptor
+	if len(encryptors) > 0 {
+		dataEncryptor = encryptors[0]
+		if dataEncryptor == nil {
+			return nil, util.ErrDataEncryptionKeyRequired
+		}
+	} else {
+		var err error
+		dataEncryptor, err = util.NewDataEncryptor(cfg.Database.DataEncryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("initialize database data encryption: %w", err)
+		}
+	}
+
 	// 设置机器唯一标识退回持久化的隐藏文件路径在 config 目录下
 	util.SetUUIDPath(filepath.Join(filepath.Dir(cfg.File), ".server_uuid"))
 
@@ -60,6 +75,7 @@ func initInfra(cfg *AppConfig, logger *zap.Logger, db *gorm.DB) (*Infra, error) 
 		dao.WithConfig(&dbCfg),
 		dao.WithUserDatabaseConfig(&userDbCfg),
 		dao.WithLogger(logger),
+		dao.WithDataEncryptor(dataEncryptor),
 		dao.WithWriteQueueManager(infra.writeQueueMgr),
 		dao.WithBleveManager(bleveMgr),
 	)

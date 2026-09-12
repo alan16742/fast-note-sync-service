@@ -29,6 +29,7 @@ storage:
     is-enable:
 database:
   auto-migrate: false
+  data-encryption-key: config-key
 user-database:
   auto-migrate: false
 `), 0644)
@@ -46,6 +47,7 @@ user-database:
 	require.False(t, *cfg.Storage.AliyunOSS.IsEnabled)
 	require.False(t, *cfg.Database.AutoMigrate)
 	require.False(t, *cfg.UserDatabase.AutoMigrate)
+	require.Equal(t, "config-key", cfg.Database.DataEncryptionKey)
 
 	require.Equal(t, "7d", cfg.Security.WebGUILoginTokenExpiry)
 	require.True(t, *cfg.Storage.AwsS3.IsEnabled)

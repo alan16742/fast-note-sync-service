@@ -7,6 +7,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/upgrade"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
@@ -31,6 +32,11 @@ It is safe to run this command multiple times - already applied migrations will 
 		appConfig, configRealpath, err := internalApp.LoadConfig(configPath)
 		if err != nil {
 			bootstrapLogger.Error("Failed to load config", zap.Error(err))
+			os.Exit(1)
+		}
+		dataEncryptor, err := util.NewDataEncryptor(appConfig.Database.DataEncryptionKey)
+		if err != nil {
+			bootstrapLogger.Error("Failed to initialize database data encryption", zap.Error(err))
 			os.Exit(1)
 		}
 
@@ -69,6 +75,7 @@ It is safe to run this command multiple times - already applied migrations will 
 			internalApp.Version,
 			&appConfig.Database,
 			&appConfig.UserDatabase,
+			dataEncryptor,
 		); err != nil {
 			bootstrapLogger.Error("Upgrade failed", zap.Error(err))
 			os.Exit(1)

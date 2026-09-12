@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/model"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -66,15 +68,60 @@ func webhookToModel(item *domain.WebhookSubscription) (*model.WebhookSubscriptio
 	if item == nil {
 		return nil, nil
 	}
-	headers, err := json.Marshal(item.Headers)
+	headers := make(map[string]string, len(item.Headers))
+	for key, value := range item.Headers {
+		headers[key] = value
+	}
+	headerData, err := json.Marshal(headers)
 	if err != nil {
 		return nil, err
 	}
 	return &model.WebhookSubscription{
-		ID: item.ID, UID: item.UID, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: string(headers), Secret: item.Secret,
+		ID: item.ID, UID: item.UID, Provider: item.Provider, URL: item.URL, Method: item.Method, Headers: string(headerData), Secret: item.Secret,
 		TitleTemplate: item.TitleTemplate, BodyTemplate: item.BodyTemplate,
 		CreatedAt: timex.Time(item.CreatedAt), UpdatedAt: timex.Time(item.UpdatedAt),
 	}, nil
+}
+
+func (r *webhookRepository) transformSecrets(m *model.WebhookSubscription, transform ValueTransformer) error {
+	if m == nil {
+		return nil
+	}
+	if err := transformStrings(transform, &m.URL, &m.Secret); err != nil {
+		return err
+	}
+
+	headers := make(map[string]string)
+	if strings.TrimSpace(m.Headers) != "" {
+		if err := json.Unmarshal([]byte(m.Headers), &headers); err != nil {
+			return err
+		}
+	}
+	for key, value := range headers {
+		if !util.IsSensitiveHeaderName(key) {
+			continue
+		}
+		if err := transformStrings(transform, &value); err != nil {
+			return err
+		}
+		headers[key] = value
+	}
+	data, err := json.Marshal(headers)
+	if err != nil {
+		return err
+	}
+	m.Headers = string(data)
+	return nil
+}
+
+func (r *webhookRepository) fromModel(m *model.WebhookSubscription) (*domain.WebhookSubscription, error) {
+	plain, err := cloneAndTransform(m, func(copy *model.WebhookSubscription) error {
+		return r.transformSecrets(copy, r.dao.DataProtector().Decrypt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return webhookToDomain(plain)
 }
 
 func (r *webhookRepository) List(ctx context.Context, uid int64) ([]*domain.WebhookSubscription, error) {
@@ -86,7 +133,15 @@ func (r *webhookRepository) List(ctx context.Context, uid int64) ([]*domain.Webh
 	if err := db.WithContext(ctx).Where("uid = ?", uid).Order("id desc").Find(&items).Error; err != nil {
 		return nil, err
 	}
-	return webhookDomains(items)
+	result := make([]*domain.WebhookSubscription, 0, len(items))
+	for _, item := range items {
+		value, err := r.fromModel(item)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, value)
+	}
+	return result, nil
 }
 
 func (r *webhookRepository) GetByID(ctx context.Context, id, uid int64) (*domain.WebhookSubscription, error) {
@@ -101,7 +156,11 @@ func (r *webhookRepository) GetByID(ctx context.Context, id, uid int64) (*domain
 		}
 		return nil, err
 	}
-	return webhookToDomain(&item)
+	value, err := r.fromModel(&item)
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func (r *webhookRepository) Save(ctx context.Context, subscription *domain.WebhookSubscription, uid int64) (*domain.WebhookSubscription, error) {
@@ -112,6 +171,9 @@ func (r *webhookRepository) Save(ctx context.Context, subscription *domain.Webho
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		item, err := webhookToModel(subscription)
 		if err != nil {
+			return err
+		}
+		if err := r.transformSecrets(item, r.dao.DataProtector().Encrypt); err != nil {
 			return err
 		}
 		item.UID = uid
@@ -132,8 +194,13 @@ func (r *webhookRepository) Save(ctx context.Context, subscription *domain.Webho
 				return err
 			}
 		}
-		result, err = webhookToDomain(item)
-		return err
+		saved := *subscription
+		saved.ID = item.ID
+		saved.UID = item.UID
+		saved.CreatedAt = time.Time(item.CreatedAt)
+		saved.UpdatedAt = time.Time(item.UpdatedAt)
+		result = &saved
+		return nil
 	})
 	return result, err
 }
@@ -145,16 +212,4 @@ func (r *webhookRepository) Delete(ctx context.Context, id, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		return db.Where("id = ? AND uid = ?", id, uid).Delete(&model.WebhookSubscription{}).Error
 	})
-}
-
-func webhookDomains(items []*model.WebhookSubscription) ([]*domain.WebhookSubscription, error) {
-	result := make([]*domain.WebhookSubscription, 0, len(items))
-	for _, item := range items {
-		value, err := webhookToDomain(item)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, value)
-	}
-	return result, nil
 }

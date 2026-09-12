@@ -5,6 +5,7 @@ package config
 type DatabaseConfig struct {
 	Type                string `yaml:"type" default:"sqlite"`                      // database type (mysql, postgres, sqlite) // 数据库类型 (mysql, postgres, sqlite)
 	Path                string `yaml:"path" default:"storage/database/db.sqlite3"` // SQLite database file path // SQLite 数据库文件路径
+	DataEncryptionKey   string `yaml:"data-encryption-key" json:"-"`               // key used to encrypt sensitive values stored in the database // 数据库敏感字段加密密钥
 	UserName            string `yaml:"username"`                                   // database login username // 数据库登录用户名
 	Password            string `yaml:"password"`                                   // database login password // 数据库登录密码
 	Host                string `yaml:"host"`                                       // database host // 数据库主机地址

@@ -108,6 +108,23 @@ func (r *storageRepository) toModel(s *domain.Storage) *model.Storage {
 	return modelStorage
 }
 
+func (r *storageRepository) transformSecrets(m *model.Storage, transform ValueTransformer) error {
+	if m == nil {
+		return nil
+	}
+	return transformStrings(transform, &m.AccessKeySecret, &m.Password)
+}
+
+func (r *storageRepository) fromModel(m *model.Storage) (*domain.Storage, error) {
+	plain, err := cloneAndTransform(m, func(copy *model.Storage) error {
+		return r.transformSecrets(copy, r.dao.DataProtector().Decrypt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.toDomain(plain), nil
+}
+
 // GetByID retrieves storage configuration by ID
 // GetByID 根据ID获取存储配置
 func (r *storageRepository) GetByID(ctx context.Context, id, uid int64) (*domain.Storage, error) {
@@ -116,7 +133,7 @@ func (r *storageRepository) GetByID(ctx context.Context, id, uid int64) (*domain
 	if err != nil {
 		return nil, err
 	}
-	return r.toDomain(m), nil
+	return r.fromModel(m)
 }
 
 // Create creates storage configuration
@@ -128,6 +145,9 @@ func (r *storageRepository) Create(ctx context.Context, storage *domain.Storage,
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.storage(uid).Storage
 		m := r.toModel(storage)
+		if err := r.transformSecrets(m, r.dao.DataProtector().Encrypt); err != nil {
+			return err
+		}
 		m.UID = uid
 		m.IsDeleted = 0
 		m.CreatedAt = timex.Now()
@@ -137,7 +157,12 @@ func (r *storageRepository) Create(ctx context.Context, storage *domain.Storage,
 		if createErr != nil {
 			return createErr
 		}
-		result = r.toDomain(m)
+		saved := *storage
+		saved.ID = m.ID
+		saved.UID = m.UID
+		saved.CreatedAt = time.Time(m.CreatedAt)
+		saved.UpdatedAt = time.Time(m.UpdatedAt)
+		result = &saved
 		return nil
 	})
 
@@ -164,6 +189,9 @@ func (r *storageRepository) Update(ctx context.Context, storage *domain.Storage,
 		}
 
 		m := r.toModel(storage)
+		if err := r.transformSecrets(m, r.dao.DataProtector().Encrypt); err != nil {
+			return err
+		}
 		m.UID = uid
 		m.CreatedAt = old.CreatedAt
 		m.UpdatedAt = timex.Now()
@@ -172,7 +200,12 @@ func (r *storageRepository) Update(ctx context.Context, storage *domain.Storage,
 		if updateErr != nil {
 			return updateErr
 		}
-		result = r.toDomain(m)
+		saved := *storage
+		saved.ID = m.ID
+		saved.UID = m.UID
+		saved.CreatedAt = time.Time(m.CreatedAt)
+		saved.UpdatedAt = time.Time(m.UpdatedAt)
+		result = &saved
 		return nil
 	})
 
@@ -193,7 +226,11 @@ func (r *storageRepository) List(ctx context.Context, uid int64) ([]*domain.Stor
 
 	var list []*domain.Storage
 	for _, m := range modelList {
-		list = append(list, r.toDomain(m))
+		item, err := r.fromModel(m)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, item)
 	}
 	return list, nil
 }

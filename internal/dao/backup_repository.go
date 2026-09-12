@@ -47,7 +47,7 @@ func (r *backupRepository) backup(uid int64) *query.Query {
 	}, r.GetKey(uid)+"#backup", r.GetKey(uid))
 }
 
-func (r *backupRepository) configToDomain(m *model.BackupConfig) *domain.BackupConfig {
+func configToDomain(m *model.BackupConfig) *domain.BackupConfig {
 	if m == nil {
 		return nil
 	}
@@ -69,7 +69,7 @@ func (r *backupRepository) configToDomain(m *model.BackupConfig) *domain.BackupC
 	}
 }
 
-func (r *backupRepository) configToModel(d *domain.BackupConfig) *model.BackupConfig {
+func configToModel(d *domain.BackupConfig) *model.BackupConfig {
 	if d == nil {
 		return nil
 	}
@@ -95,7 +95,7 @@ func (r *backupRepository) configToModel(d *domain.BackupConfig) *model.BackupCo
 	}
 }
 
-func (r *backupRepository) historyToDomain(m *model.BackupHistory) *domain.BackupHistory {
+func historyToDomain(m *model.BackupHistory) *domain.BackupHistory {
 	if m == nil {
 		return nil
 	}
@@ -120,7 +120,7 @@ func (r *backupRepository) historyToDomain(m *model.BackupHistory) *domain.Backu
 	}
 }
 
-func (r *backupRepository) historyToModel(d *domain.BackupHistory) *model.BackupHistory {
+func historyToModel(d *domain.BackupHistory) *model.BackupHistory {
 	if d == nil {
 		return nil
 	}
@@ -145,6 +145,40 @@ func (r *backupRepository) historyToModel(d *domain.BackupHistory) *model.Backup
 	}
 }
 
+func (r *backupRepository) transformConfigSecrets(m *model.BackupConfig, transform ValueTransformer) error {
+	if m == nil {
+		return nil
+	}
+	return transformStrings(transform, &m.PasswordValue)
+}
+
+func (r *backupRepository) transformHistorySecrets(m *model.BackupHistory, transform ValueTransformer) error {
+	if m == nil {
+		return nil
+	}
+	return transformStrings(transform, &m.Password)
+}
+
+func (r *backupRepository) configFromModel(m *model.BackupConfig) (*domain.BackupConfig, error) {
+	plain, err := cloneAndTransform(m, func(copy *model.BackupConfig) error {
+		return r.transformConfigSecrets(copy, r.dao.DataProtector().Decrypt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return configToDomain(plain), nil
+}
+
+func (r *backupRepository) historyFromModel(m *model.BackupHistory) (*domain.BackupHistory, error) {
+	plain, err := cloneAndTransform(m, func(copy *model.BackupHistory) error {
+		return r.transformHistorySecrets(copy, r.dao.DataProtector().Decrypt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return historyToDomain(plain), nil
+}
+
 func (r *backupRepository) GetByID(ctx context.Context, id, uid int64) (*domain.BackupConfig, error) {
 	q := r.backup(uid).BackupConfig
 	m, err := q.WithContext(ctx).Where(q.UID.Eq(uid), q.ID.Eq(id)).First()
@@ -154,7 +188,7 @@ func (r *backupRepository) GetByID(ctx context.Context, id, uid int64) (*domain.
 		}
 		return nil, err
 	}
-	return r.configToDomain(m), nil
+	return r.configFromModel(m)
 }
 
 func (r *backupRepository) DeleteConfig(ctx context.Context, id, uid int64) error {
@@ -174,7 +208,11 @@ func (r *backupRepository) ListConfigs(ctx context.Context, uid int64) ([]*domai
 	}
 	var result []*domain.BackupConfig
 	for _, m := range configs {
-		result = append(result, r.configToDomain(m))
+		item, err := r.configFromModel(m)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
 	}
 	return result, nil
 }
@@ -183,7 +221,10 @@ func (r *backupRepository) SaveConfig(ctx context.Context, config *domain.Backup
 	var result *domain.BackupConfig
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		q := r.backup(uid).BackupConfig
-		m := r.configToModel(config)
+		m := configToModel(config)
+		if err := r.transformConfigSecrets(m, r.dao.DataProtector().Encrypt); err != nil {
+			return err
+		}
 		m.UID = uid
 
 		// If ID > 0, execute update logic
@@ -210,7 +251,12 @@ func (r *backupRepository) SaveConfig(ctx context.Context, config *domain.Backup
 				return err
 			}
 		}
-		result = r.configToDomain(m)
+		saved := *config
+		saved.ID = m.ID
+		saved.UID = m.UID
+		saved.CreatedAt = time.Time(m.CreatedAt)
+		saved.UpdatedAt = time.Time(m.UpdatedAt)
+		result = &saved
 		return nil
 	})
 	return result, err
@@ -222,14 +268,22 @@ func (r *backupRepository) CreateHistory(ctx context.Context, history *domain.Ba
 	var result *domain.BackupHistory
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		q := r.backup(uid).BackupHistory
-		m := r.historyToModel(history)
+		m := historyToModel(history)
+		if err := r.transformHistorySecrets(m, r.dao.DataProtector().Encrypt); err != nil {
+			return err
+		}
 		m.UID = uid
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
 		if err := q.WithContext(ctx).Save(m); err != nil {
 			return err
 		}
-		result = r.historyToDomain(m)
+		saved := *history
+		saved.ID = m.ID
+		saved.UID = m.UID
+		saved.CreatedAt = time.Time(m.CreatedAt)
+		saved.UpdatedAt = time.Time(m.UpdatedAt)
+		result = &saved
 		return nil
 	})
 	return result, err
@@ -245,7 +299,11 @@ func (r *backupRepository) ListHistory(ctx context.Context, uid int64, configID 
 
 	var list []*domain.BackupHistory
 	for _, m := range modelList {
-		list = append(list, r.historyToDomain(m))
+		item, err := r.historyFromModel(m)
+		if err != nil {
+			return nil, 0, err
+		}
+		list = append(list, item)
 	}
 	return list, count, nil
 }
@@ -259,7 +317,11 @@ func (r *backupRepository) ListOldHistory(ctx context.Context, uid int64, config
 
 	var list []*domain.BackupHistory
 	for _, m := range modelList {
-		list = append(list, r.historyToDomain(m))
+		item, err := r.historyFromModel(m)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, item)
 	}
 	return list, nil
 }
@@ -281,7 +343,11 @@ func (r *backupRepository) ListOldHistoryForStorage(ctx context.Context, uid, co
 	}
 	result := make([]*domain.BackupHistory, 0, len(items))
 	for _, item := range items {
-		result = append(result, r.historyToDomain(item))
+		value, err := r.historyFromModel(item)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, value)
 	}
 	return result, nil
 }

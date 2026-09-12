@@ -130,7 +130,7 @@ func (r *gitSyncRepository) ListHistory(ctx context.Context, uid int64, configID
 	return list, count, nil
 }
 
-func (r *gitSyncRepository) toDomain(m *model.GitSyncConfig) *domain.GitSyncConfig {
+func (r *gitSyncRepository) configToDomain(m *model.GitSyncConfig) *domain.GitSyncConfig {
 	if m == nil {
 		return nil
 	}
@@ -162,7 +162,7 @@ func (r *gitSyncRepository) toDomain(m *model.GitSyncConfig) *domain.GitSyncConf
 	}
 }
 
-func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfig {
+func (r *gitSyncRepository) configToModel(d *domain.GitSyncConfig) *model.GitSyncConfig {
 	if d == nil {
 		return nil
 	}
@@ -197,6 +197,23 @@ func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfi
 	}
 }
 
+func (r *gitSyncRepository) transformSecrets(m *model.GitSyncConfig, transform ValueTransformer) error {
+	if m == nil {
+		return nil
+	}
+	return transformStrings(transform, &m.Password)
+}
+
+func (r *gitSyncRepository) configFromModel(m *model.GitSyncConfig) (*domain.GitSyncConfig, error) {
+	plain, err := cloneAndTransform(m, func(copy *model.GitSyncConfig) error {
+		return r.transformSecrets(copy, r.dao.DataProtector().Decrypt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.configToDomain(plain), nil
+}
+
 func (r *gitSyncRepository) GetByID(ctx context.Context, id, uid int64) (*domain.GitSyncConfig, error) {
 	q := r.gitSync(uid).GitSyncConfig
 	m, err := q.WithContext(ctx).Where(q.ID.Eq(id), q.UID.Eq(uid)).First()
@@ -206,14 +223,17 @@ func (r *gitSyncRepository) GetByID(ctx context.Context, id, uid int64) (*domain
 		}
 		return nil, err
 	}
-	return r.toDomain(m), nil
+	return r.configFromModel(m)
 }
 
 func (r *gitSyncRepository) Save(ctx context.Context, config *domain.GitSyncConfig, uid int64) (*domain.GitSyncConfig, error) {
 	var result *domain.GitSyncConfig
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		q := r.gitSync(uid).GitSyncConfig
-		m := r.toModel(config)
+		m := r.configToModel(config)
+		if err := r.transformSecrets(m, r.dao.DataProtector().Encrypt); err != nil {
+			return err
+		}
 		m.UID = uid
 
 		if config.ID > 0 {
@@ -233,7 +253,12 @@ func (r *gitSyncRepository) Save(ctx context.Context, config *domain.GitSyncConf
 				return err
 			}
 		}
-		result = r.toDomain(m)
+		saved := *config
+		saved.ID = m.ID
+		saved.UID = m.UID
+		saved.CreatedAt = time.Time(m.CreatedAt)
+		saved.UpdatedAt = time.Time(m.UpdatedAt)
+		result = &saved
 		return nil
 	})
 	return result, err
@@ -255,7 +280,11 @@ func (r *gitSyncRepository) List(ctx context.Context, uid int64) ([]*domain.GitS
 	}
 	var res []*domain.GitSyncConfig
 	for _, m := range ms {
-		res = append(res, r.toDomain(m))
+		item, err := r.configFromModel(m)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, item)
 	}
 	return res, nil
 }

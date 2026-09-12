@@ -76,6 +76,7 @@ type Dao struct {
 	logger        *zap.Logger
 	writeQueueMgr *writequeue.Manager
 	BleveMgr      *BleveManager // Bleve index manager instance // Bleve 索引管理器实例
+	dataProtector *DataProtector
 }
 
 // DaoOption option function for configuring Dao
@@ -104,6 +105,22 @@ func WithLogger(logger *zap.Logger) DaoOption {
 	return func(d *Dao) {
 		d.logger = logger
 	}
+}
+
+// WithDataEncryptor injects the application-wide encryptor for sensitive
+// values persisted in user databases.
+func WithDataEncryptor(encryptor *util.DataEncryptor) DaoOption {
+	return func(d *Dao) {
+		d.dataProtector = NewDataProtector(encryptor)
+	}
+}
+
+// DataProtector returns the repository-facing sensitive-value transformer.
+func (d *Dao) DataProtector() *DataProtector {
+	if d == nil {
+		return nil
+	}
+	return d.dataProtector
 }
 
 // WithWriteQueueManager sets write queue manager

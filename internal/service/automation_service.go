@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
+	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/workerpool"
 	"github.com/robfig/cron/v3"
@@ -116,6 +117,19 @@ func (s *automationService) Save(ctx context.Context, uid int64, request *dto.Au
 	trigger, err := automationFromRequest(request, uid)
 	if err != nil {
 		return nil, err
+	}
+	// Validate the vault in the same user scope before persisting the rule.
+	// Execution already performs this lookup, but validating here avoids saving
+	// rules that can never run because their vault ID belongs to another user
+	// or no longer exists.
+	if s.vaultRepo != nil {
+		vault, err := s.vaultRepo.GetByID(ctx, trigger.VaultID, uid)
+		if err != nil {
+			return nil, err
+		}
+		if vault == nil {
+			return nil, code.ErrorVaultNotFound
+		}
 	}
 	if trigger.ID > 0 {
 		old, err := s.repo.GetByID(ctx, trigger.ID, uid)

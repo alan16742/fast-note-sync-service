@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -61,12 +62,40 @@ func (s *webhookTestSender) Send(_ context.Context, _, _ string, message notific
 }
 
 func TestWebhookService_ListMasksSecret(t *testing.T) {
-	service := NewWebhookService(&webhookRepositoryStub{item: &domain.WebhookSubscription{ID: 1, UID: 2, URL: "https://example.com", Secret: "hidden"}})
+	service := NewWebhookService(&webhookRepositoryStub{item: &domain.WebhookSubscription{
+		ID: 1, UID: 2, URL: "https://example.com/hook?token=query-secret&title={{content}}", Secret: "hidden",
+		Headers: map[string]string{"Authorization": "Bearer hidden", "X-Source": "fast-note-sync"},
+	}})
 	items, err := service.List(context.Background(), 2)
 
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	assert.True(t, items[0].HasSecret)
+	assert.Equal(t, "https://example.com/hook?token=&title={{content}}", items[0].URL)
+	assert.Equal(t, "", items[0].Headers["Authorization"])
+	assert.Equal(t, "fast-note-sync", items[0].Headers["X-Source"])
+	encodedHeaders, err := json.Marshal(items[0].Headers)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encodedHeaders), "Bearer hidden")
+	assert.NotContains(t, items[0].URL, "query-secret")
+}
+
+func TestWebhookSavePreservesRedactedCredentials(t *testing.T) {
+	repo := &webhookRepositoryStub{item: &domain.WebhookSubscription{
+		ID: 1, UID: 2, Provider: domain.WebhookProviderCustom,
+		URL:     "https://example.com/hook?token=query-secret&title={{content}}",
+		Headers: map[string]string{"Authorization": "Bearer header-secret"},
+	}}
+	svc := NewWebhookService(repo)
+	_, err := svc.Save(context.Background(), 2, &dto.WebhookSubscriptionRequest{
+		ID: 1, Provider: domain.WebhookProviderCustom,
+		URL: "https://example.com/hook?token=&title={{content}}", Method: "POST",
+		Headers: map[string]string{"Authorization": "", "X-Source": "fast-note-sync"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/hook?token=query-secret&title={{content}}", repo.item.URL)
+	assert.Equal(t, "Bearer header-secret", repo.item.Headers["Authorization"])
+	assert.Equal(t, "fast-note-sync", repo.item.Headers["X-Source"])
 }
 
 func TestWebhookSaveDefaultsAndCredentialSwitch(t *testing.T) {
@@ -121,4 +150,67 @@ func TestWebhookServiceTestRequestUsesDraftTemplates(t *testing.T) {
 	}))
 	assert.Equal(t, "modify", sender.message.Title)
 	assert.Equal(t, "测试笔记库|test-note.md|这是一条测试通知。", sender.message.Body)
+}
+
+func TestWebhookHeaderCredentialLifecycle(t *testing.T) {
+	repo := &webhookRepositoryStub{item: &domain.WebhookSubscription{
+		ID: 1, UID: 2, Provider: "custom", URL: "https://example.com/hook",
+		Headers: map[string]string{"Authorization": "old-secret", "X-Source": "source", "X-Token": ""},
+	}}
+	svc := NewWebhookService(repo)
+	items, err := svc.List(context.Background(), 2)
+	require.NoError(t, err)
+	require.Equal(t, []string{"Authorization"}, items[0].ProtectedHeaders)
+	request := &dto.WebhookSubscriptionRequest{ID: 1, Provider: "custom", URL: repo.item.URL, Headers: map[string]string{"authorization": ""}}
+	_, err = svc.Save(context.Background(), 2, request)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"authorization": "old-secret"}, repo.item.Headers)
+	require.Empty(t, request.Headers["authorization"], "must not put secrets in the caller's request")
+	request.Headers["authorization"] = "replacement"
+	item, err := svc.Save(context.Background(), 2, request)
+	require.NoError(t, err)
+	require.Empty(t, item.Headers["authorization"])
+	require.Equal(t, "replacement", repo.item.Headers["authorization"])
+	request.Headers = map[string]string{}
+	_, err = svc.Save(context.Background(), 2, request)
+	require.NoError(t, err)
+	require.Empty(t, repo.item.Headers)
+}
+
+func TestWebhookSaveAndTestRejectUnsafeHeadersBeforeNormalization(t *testing.T) {
+	for name, headers := range map[string]map[string]string{
+		"case duplicate": {"Authorization": "one", "authorization": "two"},
+		"trim collision": {"Authorization": "one", " Authorization ": "two"},
+		"newline":        {"Authorization": "secret\r\n"},
+		"nul":            {"Authorization": "secret\x00"},
+		"del":            {"Authorization": "secret\x7f"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := &webhookRepositoryStub{}
+			svc := NewWebhookService(repo)
+			request := &dto.WebhookSubscriptionRequest{Provider: "custom", URL: "https://example.com", Headers: headers}
+			_, err := svc.Save(context.Background(), 2, request)
+			require.Error(t, err)
+			require.Error(t, svc.TestRequest(context.Background(), 2, request))
+			require.Nil(t, repo.item)
+		})
+	}
+}
+
+func TestWebhookCannotForwardSavedHeadersToChangedEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"https://other.example/hook", "http://example.com/hook", "https://example.com/other"} {
+		t.Run(endpoint, func(t *testing.T) {
+			repo := &webhookRepositoryStub{item: &domain.WebhookSubscription{ID: 1, UID: 2, Provider: "custom", URL: "https://example.com/hook", Headers: map[string]string{"Authorization": "secret"}}}
+			svc := NewWebhookService(repo)
+			request := &dto.WebhookSubscriptionRequest{ID: 1, Provider: "custom", URL: endpoint, Headers: map[string]string{"Authorization": ""}}
+			_, err := svc.Save(context.Background(), 2, request)
+			require.ErrorContains(t, err, "re-enter")
+			require.ErrorContains(t, svc.TestRequest(context.Background(), 2, request), "re-enter")
+			require.Equal(t, "https://example.com/hook", repo.item.URL)
+			request.Headers["Authorization"] = "new-secret"
+			_, err = svc.Save(context.Background(), 2, request)
+			require.NoError(t, err)
+			require.Equal(t, "new-secret", repo.item.Headers["Authorization"])
+		})
+	}
 }

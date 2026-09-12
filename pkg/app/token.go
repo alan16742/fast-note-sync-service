@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"time"
@@ -9,7 +8,6 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 
-	"crypto/aes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -115,11 +113,11 @@ func (t *tokenManager) Parse(token string) (*UserEntity, error) {
 	claims := &UserEntity{}
 
 	parsedToken, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(t.config.SecretKey + "_" + util.GetMachineID()), nil
-	})
+	}, jwt.WithExpirationRequired())
 
 	if err != nil {
 		return nil, err
@@ -157,8 +155,7 @@ func (t *tokenManager) ShareGenerate(shareID int64, uid int64, resources map[str
 	return base64.RawURLEncoding.EncodeToString(combined), nil
 }
 
-// ShareParse parses share Token with compatibility fallback
-// ShareParse 解析分享 Token，支持兼容旧版
+// ShareParse accepts only authenticated HMAC-SHA256 share tokens.
 func (t *tokenManager) ShareParse(tokenString string) (*ShareEntity, error) {
 	data, err := base64.RawURLEncoding.DecodeString(tokenString)
 	if err != nil {
@@ -190,52 +187,7 @@ func (t *tokenManager) ShareParse(tokenString string) (*ShareEntity, error) {
 		}
 	}
 
-	// 2. If length matches 16 bytes, fallback to parsing with AES-ECB (old version)
-	// 2. 如果长度为 16 字节，回退用旧版 AES-ECB 算法解密与校验
-	if len(data) == 16 {
-		key := sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetMachineID()))
-		block, err := aes.NewCipher(key[:])
-		if err == nil {
-			decrypted := make([]byte, 16)
-			block.Decrypt(decrypted, data)
-
-			// Verify old checksum
-			// 校验旧校验和
-			h := sha256.New()
-			h.Write(key[:])
-			h.Write(decrypted[0:13])
-			sum := h.Sum(nil)
-
-			if bytes.Equal(decrypted[13:16], sum[:3]) {
-				// Parse SID (6 bytes)
-				// 解析 SID (6 字节)
-				sidBytes := make([]byte, 8)
-				copy(sidBytes[2:8], decrypted[0:6])
-				shareID := int64(binary.BigEndian.Uint64(sidBytes))
-
-				// Parse UID (3 bytes)
-				// 解析 UID (3 字节)
-				uidBytes := make([]byte, 8)
-				copy(uidBytes[5:8], decrypted[6:9])
-				uid := int64(binary.BigEndian.Uint64(uidBytes))
-
-				// Parse ExpiresAt (4 bytes)
-				// 解析 ExpiresAt (4 字节)
-				expUnix := int64(binary.BigEndian.Uint32(decrypted[9:13]))
-
-				if time.Now().Unix() > expUnix {
-					return nil, fmt.Errorf("token expired")
-				}
-				return &ShareEntity{
-					SID:       shareID,
-					UID:       uid,
-					ExpiresAt: time.Unix(expUnix, 0),
-				}, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("invalid token signature or fallback failed")
+	return nil, fmt.Errorf("invalid token signature")
 }
 
 // Validate validates if Token is valid
@@ -257,11 +209,11 @@ func ParseTokenWithKey(tokenString string, secretKey string) (*UserEntity, error
 	claims := &UserEntity{}
 
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(secretKey + "_" + util.GetMachineID()), nil
-	})
+	}, jwt.WithExpirationRequired())
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {

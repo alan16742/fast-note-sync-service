@@ -17,6 +17,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/upgrade"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safe_close"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/haierkeys/fast-note-sync-service/pkg/validator"
 
 	"github.com/gin-gonic/gin"
@@ -96,6 +97,10 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	dataEncryptor, err := util.NewDataEncryptor(appConfig.Database.DataEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("initialize database data encryption from config: %w", err)
+	}
 
 	// Determine run mode
 	// 确定运行模式
@@ -139,14 +144,6 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 	}
 	s.db = db
 
-	// Initialize App Container (using AppConfig directly)
-	// 初始化 App Container（直接使用 AppConfig）
-	app, err := internalApp.NewApp(appConfig, s.logger, db, frontendFiles)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create app container: %w", err)
-	}
-	s.app = app
-
 	// Auto-execute migration tasks (using injected config)
 	// 自动执行迁移任务（使用注入的配置）
 	if err := upgrade.Execute(
@@ -155,9 +152,21 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 		internalApp.Version,
 		&appConfig.Database,
 		&appConfig.UserDatabase,
+		dataEncryptor,
 	); err != nil {
 		return nil, fmt.Errorf("upgrade.Execute: %w", err)
 	}
+
+	// Initialize App Container only after all database migrations have
+	// completed successfully. Repositories therefore see the current
+	// ciphertext-only persistence format from their first read.
+	// 仅在所有数据库迁移成功后初始化 App，确保 Repository 从第一次读取起
+	// 就只面对当前的密文持久化格式。
+	app, err := internalApp.NewApp(appConfig, s.logger, db, frontendFiles, dataEncryptor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create app container: %w", err)
+	}
+	s.app = app
 
 	// Initialize validator
 	// 初始化验证器
@@ -337,8 +346,6 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 			}
 		}
 	})
-
-
 
 	// Start Cloudflare tunnel if enabled
 	if appConfig.Cloudflare.Enabled && appConfig.Cloudflare.Token != "" {

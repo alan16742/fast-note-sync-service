@@ -1,6 +1,13 @@
 package app
 
 import (
+	"crypto/aes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
+
 	"testing"
 	"time"
 )
@@ -140,5 +147,51 @@ func TestTokenManager_GenerateAndParse(t *testing.T) {
 	_, err = tm.Parse(tamperedToken)
 	if err == nil {
 		t.Error("Expected error for tampered user token, but got nil")
+	}
+}
+
+func TestShareParseRejectsLegacyChecksumToken(t *testing.T) {
+	tm := NewTokenManager(TokenConfig{ShareTokenKey: "test-key"})
+	key := sha256.Sum256([]byte("test-key_" + util.GetMachineID()))
+	payload := make([]byte, 16)
+	payload[5], payload[8] = 1, 1
+	binary.BigEndian.PutUint32(payload[9:13], uint32(time.Now().Add(time.Hour).Unix()))
+	checksum := sha256.New()
+	checksum.Write(key[:])
+	checksum.Write(payload[:13])
+	copy(payload[13:], checksum.Sum(nil)[:3])
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	block.Encrypt(payload, payload)
+	if _, err := tm.ShareParse(base64.RawURLEncoding.EncodeToString(payload)); err == nil {
+		t.Fatal("legacy token with only a 24-bit checksum must be rejected")
+	}
+}
+
+func TestTokenParsersRequireExpiryAndHS256(t *testing.T) {
+	tm := NewTokenManager(TokenConfig{SecretKey: "test-key"})
+	for _, tc := range []struct {
+		name   string
+		method jwt.SigningMethod
+		expiry *jwt.NumericDate
+	}{
+		{"missing expiry", jwt.SigningMethodHS256, nil},
+		{"wrong algorithm", jwt.SigningMethodHS512, jwt.NewNumericDate(time.Now().Add(time.Hour))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := jwt.NewWithClaims(tc.method, UserEntity{UID: 1, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: tc.expiry}})
+			signed, err := token.SignedString([]byte("test-key_" + util.GetMachineID()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tm.Parse(signed); err == nil {
+				t.Fatal("manager accepted invalid claims")
+			}
+			if _, err := ParseTokenWithKey(signed, "test-key"); err == nil {
+				t.Fatal("helper accepted invalid claims")
+			}
+		})
 	}
 }

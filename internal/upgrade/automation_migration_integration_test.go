@@ -19,7 +19,11 @@ import (
 
 func automationMigrationFixture(t *testing.T) (*gorm.DB, *config.DatabaseConfig, *MigrationContext) {
 	t.Helper()
-	cfg := &config.DatabaseConfig{Type: "sqlite", Path: filepath.Join(t.TempDir(), "db.sqlite3")}
+	cfg := &config.DatabaseConfig{
+		Type:              "sqlite",
+		Path:              filepath.Join(t.TempDir(), "db.sqlite3"),
+		DataEncryptionKey: "automation migration test key-0123456789abcdef",
+	}
 	db, err := dao.NewEngine(*cfg, zap.NewNop())
 	require.NoError(t, err)
 	d := dao.New(db, context.Background(), dao.WithConfig(cfg), dao.WithLogger(zap.NewNop()))

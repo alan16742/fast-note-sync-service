@@ -157,7 +157,12 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 
 	conf.RepoURL = params.RepoURL
 	conf.Username = params.Username
-	conf.Password = params.Password
+	// The API deliberately does not return the stored Git password. A blank
+	// password while editing an existing config therefore means "keep it";
+	// only an explicitly supplied value replaces the credential.
+	if strings.TrimSpace(params.Password) != "" || params.ID <= 0 {
+		conf.Password = params.Password
+	}
 	conf.Branch = params.Branch
 	if conf.Branch == "" {
 		conf.Branch = "main"

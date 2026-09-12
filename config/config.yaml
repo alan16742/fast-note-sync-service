@@ -200,6 +200,9 @@ database:
   # 数据库文件路径 (针对 sqlite)
   # Database file path (for sqlite)
   path: storage/database/db.sqlite3
+  # 数据库敏感字段加密密钥。首次自动创建配置时会生成随机值；请妥善保存，修改后将无法读取已有密文。
+  # Key for encrypting sensitive database values. A random value is generated for a new config; keep it safe and do not change it for existing data.
+  data-encryption-key: ""
   # 数据库连接地址 (针对 mysql/postgres)
   # Database host (for mysql/postgres)
   host:
