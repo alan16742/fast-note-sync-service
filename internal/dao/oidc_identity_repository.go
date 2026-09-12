@@ -27,8 +27,8 @@ func init() {
 
 func (r *oidcIdentityRepository) db() *gorm.DB {
 	db := r.dao.ResolveDB()
-	r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "UserOIDCIdentity")
+	r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "UserOIDCIdentity")
 	}, "oidc_identity#user_oidc_identity")
 	return db
 }

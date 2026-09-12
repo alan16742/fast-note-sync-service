@@ -50,8 +50,8 @@ func init() {
 // file gets the file query object
 // file 获取文件查询对象
 func (r *fileRepository) file(uid int64) *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "File")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "File")
 	}, r.GetKey(uid)+"#file", r.GetKey(uid))
 }
 

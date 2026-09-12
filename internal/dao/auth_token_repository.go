@@ -42,8 +42,8 @@ func (r *authTokenRepository) GetKey(uid int64) string {
 // authToken gets the auth token query object
 // authToken 获取认证令牌查询对象
 func (r *authTokenRepository) authToken() *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "AuthToken")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "AuthToken")
 	}, "user#auth_token")
 }
 
@@ -214,8 +214,8 @@ func NewAuthTokenLogRepository(dao *Dao) domain.AuthTokenLogRepository {
 // authTokenLog gets the auth token log query object
 // authTokenLog 获取认证令牌日志查询对象
 func (r *authTokenLogRepository) authTokenLog() *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "AuthTokenLog")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "AuthTokenLog")
 	}, "user#auth_token_log")
 }
 

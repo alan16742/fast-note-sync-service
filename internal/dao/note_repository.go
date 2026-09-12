@@ -50,11 +50,14 @@ func init() {
 
 // note 获取笔记查询对象
 func (r *noteRepository) note(uid int64) *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Note")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		if err := model.AutoMigrate(g, "Note"); err != nil {
+			return err
+		}
 		// Initialize universal full-text search table
 		// 初始化通用全文搜索表
 		_ = model.CreateNoteFTSTable(g)
+		return nil
 	}, r.GetKey(uid)+"#note_v3", r.GetKey(uid))
 }
 

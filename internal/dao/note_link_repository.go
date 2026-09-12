@@ -43,8 +43,8 @@ func init() {
 // noteLink 获取笔记链接查询对象
 func (r *noteLinkRepository) noteLink(uid int64) *query.Query {
 	key := r.GetKey(uid)
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "NoteLink")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "NoteLink")
 	}, key+"#noteLink", key)
 }
 

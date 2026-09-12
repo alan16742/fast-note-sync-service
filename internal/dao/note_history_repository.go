@@ -48,8 +48,8 @@ func init() {
 // noteHistory gets the note history query object
 // noteHistory 获取笔记历史查询对象
 func (r *noteHistoryRepository) noteHistory(uid int64) *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "NoteHistory")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "NoteHistory")
 	}, r.GetKey(uid)+"#noteHistory", r.GetKey(uid))
 }
 

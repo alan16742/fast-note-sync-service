@@ -62,7 +62,7 @@ type Dao struct {
 	Db       *gorm.DB
 	KeyDb    map[string]*dbEntry
 	ctx      context.Context
-	onceKeys sync.Map
+	onceKeys sync.Map     // map[string]*onceInitEntry, per-key one-time DB initialization state // 每个库一次性初始化的状态
 	mu       sync.RWMutex // protects concurrent access to KeyDb // 保护 KeyDb 的并发访问
 
 	poolSemaphores sync.Map // map[string]*semaphore.Weighted 针对不同配置的并发控制
@@ -240,18 +240,38 @@ func (d *Dao) WriteQueueManager() *writequeue.Manager {
 	return d.writeQueueMgr
 }
 
+// onceInitEntry serializes the one-time initialization of a (onceKey, database) pair.
+// The mutex is held for the whole initialization so that a request arriving while the
+// tables are still being created waits for it instead of running against a database whose
+// schema does not exist yet — and so a failed initialization is reported to the caller
+// that triggered it rather than to an unrelated concurrent query.
+// onceInitEntry 串行化 (onceKey, 数据库) 组合的一次性初始化。互斥锁覆盖整个初始化过程，
+// 使得在表尚未创建完成时到达的请求会等待初始化结束，而不是在一个 schema 还不存在的库上执行
+// 查询；同时保证初始化失败被归因到触发它的那次调用，而不是某个并发的无关查询。
+type onceInitEntry struct {
+	mu   sync.Mutex
+	done bool
+}
+
 // QueryWithOnceInit 执行带有单次初始化逻辑的数据库查询
 // QueryWithOnceInit executes a database query with once-init logic.
+// 首个调用者执行初始化(如 AutoMigrate)，并发到达的其他调用者会等待其完成后再执行查询；
+// 初始化失败不会被缓存，下一次调用会重试。
+//
 // 参数说明:
-//   - f func(*gorm.DB): 初始化函数，仅在 onceKey 首次出现时执行 (如 AutoMigrate)
+//   - f func(*gorm.DB) error: 初始化函数，仅在 onceKey 首次出现时执行 (如 AutoMigrate)
 //   - onceKey string: 用于确保初始化逻辑仅执行一次的唯一标识
 //   - key ...string: 数据库连接标识（可变参数）。不传或为空时使用主数据库；传入时用于路由到特定租户/用户库
 //
 // Parameters:
-//   - f func(*gorm.DB): Initialization function, executed only the first time onceKey is encountered (e.g., AutoMigrate).
+//   - f func(*gorm.DB) error: Initialization function, executed only the first time onceKey is encountered (e.g., AutoMigrate).
 //   - onceKey string: Unique identifier to ensure initialization logic runs only once.
 //   - key ...string: Database connection identifier (variadic). Uses main DB if omitted/empty; uses provided key for tenant/user DB routing.
-func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string) *query.Query {
+//
+// The first caller runs the initialization; concurrent callers block until it finishes
+// instead of querying a schema that is still being created. A failed initialization is
+// not cached, so the next call retries it.
+func (d *Dao) QueryWithOnceInit(f func(*gorm.DB) error, onceKey string, key ...string) *query.Query {
 	db := d.ResolveDB(key...)
 	if db == nil {
 		keyName := "default"
@@ -270,10 +290,50 @@ func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string)
 		actualOnceKey = onceKey + "@" + key[0]
 	}
 
-	if _, loaded := d.onceKeys.LoadOrStore(actualOnceKey, true); !loaded {
-		f(db)
+	if err := d.runOnceInit(actualOnceKey, func() error { return f(db) }); err != nil {
+		keyName := "default"
+		if len(key) > 0 {
+			keyName = key[0]
+		}
+		// The initialization failure is logged here because query callers only see the
+		// generic SQL error that follows (e.g. "no such table"), which hides its cause.
+		// 初始化失败在此记录：查询调用方只会看到随后那条笼统的 SQL 错误(如 "no such table")，
+		// 无法看出真正的原因。
+		d.Logger().Error("database once-init failed",
+			zap.String("key", keyName),
+			zap.String("onceKey", actualOnceKey),
+			zap.Error(err))
 	}
 	return query.Use(db)
+}
+
+// runOnceInit runs init at most once per key, concurrently safe. Callers that arrive while
+// another goroutine is still initializing wait for it; callers that arrive after a failure
+// retry, so a transient error (e.g. a busy SQLite file) cannot leave the tables missing for
+// the rest of the process lifetime.
+// runOnceInit 对每个 key 至多执行一次 init，且并发安全。在另一个 goroutine 正在初始化时到达的
+// 调用会等待其结束；初始化失败后到达的调用会重试，避免一次瞬时错误(如 SQLite 文件被占用)导致
+// 该库在进程剩余生命周期内一直缺表。
+func (d *Dao) runOnceInit(key string, init func() error) error {
+	value, _ := d.onceKeys.LoadOrStore(key, &onceInitEntry{})
+	entry, ok := value.(*onceInitEntry)
+	if !ok {
+		// Should never happen: only this method stores entries.
+		// 理论上不会发生：只有本方法会写入 entry。
+		return fmt.Errorf("invalid once-init entry for key %s", key)
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if entry.done {
+		return nil
+	}
+	if err := init(); err != nil {
+		return err
+	}
+	entry.done = true
+	return nil
 }
 
 // CleanupConnections cleans up idle database connections
@@ -767,8 +827,8 @@ func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 // user gets the user query object (internal method)
 // user 获取用户查询对象（内部方法）
 func (d *Dao) user() *query.Query {
-	return d.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "User")
+	return d.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "User")
 	}, "user#user")
 }
 

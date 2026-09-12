@@ -48,8 +48,8 @@ func init() {
 // setting 获取配置查询对象
 func (r *settingRepository) setting(uid int64) *query.Query {
 	key := r.GetKey(uid)
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Setting")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "Setting")
 	}, key+"#setting", key)
 }
 

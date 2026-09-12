@@ -43,8 +43,8 @@ func init() {
 // userShare 获取分享查询对象
 func (r *userShareRepository) userShare(uid int64) *query.Query {
 	key := r.GetKey(uid)
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "UserShare")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "UserShare")
 	}, key+"#userShare", key)
 }
 
