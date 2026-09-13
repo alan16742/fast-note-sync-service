@@ -65,9 +65,9 @@ func (h *WebhookHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorNotUserAuthToken)
 		return
 	}
-	var request struct {
+	request := &struct {
 		ID int64 `json:"id" form:"id" binding:"required"`
-	}
+	}{}
 	if valid, errs := pkgapp.BindAndValid(c, request); !valid {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
 		return

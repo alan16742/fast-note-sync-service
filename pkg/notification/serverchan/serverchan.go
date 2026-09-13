@@ -10,8 +10,8 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/notification"
 )
 
-var sc3Key = regexp.MustCompile(`^sctp([0-9]+)t[A-Za-z0-9]+$`)
-var turboKey = regexp.MustCompile(`^SCT[A-Za-z0-9]+$`)
+var sc3Key = regexp.MustCompile(`^sctp([0-9]+)t[A-Za-z0-9-]+$`)
+var turboKey = regexp.MustCompile(`^SCT[A-Za-z0-9-]+$`)
 
 // Endpoint derives the current SC3 URL from its UID. Turbo retains its own URL.
 func Endpoint(key string) (string, error) {

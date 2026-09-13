@@ -277,11 +277,6 @@ func validateWebhookRequest(request *dto.WebhookSubscriptionRequest) error {
 	if request.ID < 0 {
 		return errors.New("invalid subscription ID")
 	}
-	if provider == domain.WebhookProviderServerChan {
-		if _, err := serverchan.Endpoint(strings.TrimSpace(request.Secret)); err != nil {
-			return err
-		}
-	}
 	if provider == domain.WebhookProviderBark {
 		if _, err := bark.Endpoint(request.URL); err != nil {
 			return err
