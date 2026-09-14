@@ -63,6 +63,7 @@ func (r *syncLogRepository) db(uid int64) *gorm.DB {
 func (r *syncLogRepository) Create(ctx context.Context, log *domain.SyncLog, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		m := &model.SyncLog{
+			EventID:       log.EventID,
 			UID:           log.UID,
 			VaultID:       log.VaultID,
 			Type:          string(log.Type),
@@ -96,6 +97,7 @@ func (r *syncLogRepository) CreateBatch(ctx context.Context, logs []*domain.Sync
 		ms := make([]*model.SyncLog, 0, len(logs))
 		for _, log := range logs {
 			m := &model.SyncLog{
+				EventID:       log.EventID,
 				UID:           log.UID,
 				VaultID:       log.VaultID,
 				Type:          string(log.Type),
@@ -156,6 +158,7 @@ func (r *syncLogRepository) List(ctx context.Context, uid int64, logType, action
 	for _, m := range rows {
 		results = append(results, &domain.SyncLog{
 			ID:            m.ID,
+			EventID:       m.EventID,
 			UID:           m.UID,
 			VaultID:       m.VaultID,
 			Type:          domain.SyncLogType(m.Type),

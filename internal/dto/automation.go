@@ -1,6 +1,9 @@
 package dto
 
-import "github.com/haierkeys/fast-note-sync-service/internal/domain"
+import (
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+)
 
 // AutomationActionDTO binds an automation trigger to an existing target
 // configuration. Secrets belong to the target configuration APIs.
@@ -52,4 +55,37 @@ type AutomationTriggerDTO struct {
 // AutomationRunRequest identifies a manual trigger to execute.
 type AutomationRunRequest struct {
 	ID int64 `json:"id" form:"id" binding:"required"`
+}
+
+type AutomationExecutionListRequest struct {
+	TriggerID int64 `json:"triggerId" form:"triggerId"`
+}
+
+type AutomationExecutionRetryRequest struct {
+	ID int64 `json:"id" form:"id" binding:"required"`
+}
+
+type AutomationActionExecutionDTO struct {
+	Type       string     `json:"type"`
+	ConfigID   int64      `json:"configId"`
+	Status     string     `json:"status"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  timex.Time `json:"startedAt"`
+	FinishedAt timex.Time `json:"finishedAt"`
+}
+
+type AutomationExecutionDTO struct {
+	ID         int64                            `json:"id"`
+	UID        int64                            `json:"uid"`
+	TriggerID  int64                            `json:"triggerId"`
+	VaultID    int64                            `json:"vaultId"`
+	EventID    string                           `json:"eventId"`
+	EventType  domain.AutomationEventType       `json:"eventType"`
+	Status     domain.AutomationExecutionStatus `json:"status"`
+	Error      string                           `json:"error,omitempty"`
+	Actions    []AutomationActionExecutionDTO   `json:"actions"`
+	StartedAt  timex.Time                       `json:"startedAt"`
+	FinishedAt timex.Time                       `json:"finishedAt"`
+	CreatedAt  timex.Time                       `json:"createdAt"`
+	UpdatedAt  timex.Time                       `json:"updatedAt"`
 }

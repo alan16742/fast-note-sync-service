@@ -69,6 +69,9 @@ func AutoMigrate(db *gorm.DB, key string) error {
 
 	case "AutomationTrigger":
 		return db.AutoMigrate(AutomationTrigger{})
+
+	case "AutomationExecution":
+		return db.AutoMigrate(AutomationExecution{})
 	}
 	return nil
 }

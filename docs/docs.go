@@ -845,6 +845,102 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/automations/executions": {
+            "get": {
+                "security": [
+                    {
+                        "UserAuthToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Automation"
+                ],
+                "summary": "List automation executions",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "name": "triggerId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Success",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/app.Res"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "allOf": [
+                                                {
+                                                    "$ref": "#/definitions/app.ListRes"
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "list": {
+                                                            "type": "array",
+                                                            "items": {
+                                                                "$ref": "#/definitions/dto.AutomationExecutionDTO"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/api/automations/executions/retry": {
+            "post": {
+                "security": [
+                    {
+                        "UserAuthToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Automation"
+                ],
+                "summary": "Retry automation execution",
+                "parameters": [
+                    {
+                        "description": "Execution ID",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.AutomationExecutionRetryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Success",
+                        "schema": {
+                            "$ref": "#/definitions/app.Res"
+                        }
+                    }
+                }
+            }
+        },
         "/api/backup/config": {
             "post": {
                 "security": [
@@ -5240,6 +5336,40 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.AutomationEventType": {
+            "type": "string",
+            "enum": [
+                "cron",
+                "note_content",
+                "file_behavior",
+                "todo_reminder",
+                "manual"
+            ],
+            "x-enum-varnames": [
+                "AutomationEventCron",
+                "AutomationEventNoteContent",
+                "AutomationEventFileBehavior",
+                "AutomationEventTodoReminder",
+                "AutomationEventManual"
+            ]
+        },
+        "domain.AutomationExecutionStatus": {
+            "type": "string",
+            "enum": [
+                "pending",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled"
+            ],
+            "x-enum-varnames": [
+                "AutomationExecutionPending",
+                "AutomationExecutionRunning",
+                "AutomationExecutionSucceeded",
+                "AutomationExecutionFailed",
+                "AutomationExecutionCancelled"
+            ]
+        },
         "dto.AdminCPUInfo": {
             "type": "object",
             "properties": {
@@ -5812,6 +5942,87 @@ const docTemplate = `{
                 "registerIsEnable": {
                     "description": "Registration enablement // 是否开启注册",
                     "type": "boolean"
+                }
+            }
+        },
+        "dto.AutomationActionExecutionDTO": {
+            "type": "object",
+            "properties": {
+                "configId": {
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.AutomationExecutionDTO": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.AutomationActionExecutionDTO"
+                    }
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "eventId": {
+                    "type": "string"
+                },
+                "eventType": {
+                    "$ref": "#/definitions/domain.AutomationEventType"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/domain.AutomationExecutionStatus"
+                },
+                "triggerId": {
+                    "type": "integer"
+                },
+                "uid": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "vaultId": {
+                    "type": "integer"
+                }
+            }
+        },
+        "dto.AutomationExecutionRetryRequest": {
+            "type": "object",
+            "required": [
+                "id"
+            ],
+            "properties": {
+                "id": {
+                    "type": "integer"
                 }
             }
         },
@@ -7651,8 +7862,16 @@ const docTemplate = `{
                     "description": "Log creation time // 创建时间",
                     "type": "string"
                 },
+                "eventId": {
+                    "description": "Stable automation event ID // 稳定的自动化事件 ID",
+                    "type": "string"
+                },
                 "message": {
                     "description": "Additional message // 附加消息",
+                    "type": "string"
+                },
+                "oldPath": {
+                    "description": "Previous path, set on rename // 原路径，重命名时填写",
                     "type": "string"
                 },
                 "path": {

@@ -398,6 +398,7 @@ DROP TABLE IF EXISTS "sync_log";
 
 CREATE TABLE "sync_log" (
     "id"             integer PRIMARY KEY AUTOINCREMENT,
+    "event_id"       text NOT NULL DEFAULT '',
     "uid"            integer NOT NULL DEFAULT 0,
     "vault_id"       integer NOT NULL DEFAULT 0,
     "type"           text NOT NULL DEFAULT '',  -- 'note', 'file', 'setting', 'folder'
@@ -417,6 +418,7 @@ CREATE TABLE "sync_log" (
 
 CREATE INDEX "idx_sync_log_uid_created_at"  ON "sync_log" ("uid", "created_at" DESC);
 CREATE INDEX "idx_sync_log_uid_type_action" ON "sync_log" ("uid", "type", "action");
+CREATE INDEX "idx_sync_log_event_id" ON "sync_log" ("event_id");
 
 -- ----------------------------
 -- Table structure for automation_rule
@@ -441,6 +443,36 @@ CREATE TABLE "automation_rule" (
 
 CREATE INDEX "idx_automation_rule_uid" ON "automation_rule" ("uid");
 CREATE INDEX "idx_automation_rule_enabled" ON "automation_rule" ("enabled");
+
+-- ----------------------------
+-- Table structure for automation_execution
+-- ----------------------------
+DROP TABLE IF EXISTS "automation_execution";
+
+CREATE TABLE "automation_execution" (
+    "id"           integer PRIMARY KEY AUTOINCREMENT,
+    "uid"          integer NOT NULL,
+    "trigger_id"   integer NOT NULL,
+    "vault_id"     integer NOT NULL,
+    "event_id"     text NOT NULL,
+    "event_type"   text NOT NULL,
+    "event"        text NOT NULL DEFAULT '',
+    "status"       text NOT NULL,
+    "error"        text NOT NULL DEFAULT '',
+    "actions"      text NOT NULL DEFAULT '[]',
+    "started_at"   datetime DEFAULT NULL,
+    "finished_at"  datetime DEFAULT NULL,
+    "created_at"   datetime DEFAULT NULL,
+    "updated_at"   datetime DEFAULT NULL
+);
+
+-- An event may match multiple triggers; idempotency is per user/trigger/event.
+CREATE UNIQUE INDEX "idx_automation_execution_event" ON "automation_execution" ("uid", "trigger_id", "event_id");
+CREATE INDEX "idx_automation_execution_uid_created" ON "automation_execution" ("uid", "created_at" DESC);
+CREATE INDEX "idx_automation_execution_trigger" ON "automation_execution" ("trigger_id");
+CREATE INDEX "idx_automation_execution_vault" ON "automation_execution" ("vault_id");
+CREATE INDEX "idx_automation_execution_type" ON "automation_execution" ("event_type");
+CREATE INDEX "idx_automation_execution_status" ON "automation_execution" ("status");
 
 -- ----------------------------
 -- Table structure for auth_token

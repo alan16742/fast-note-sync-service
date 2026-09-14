@@ -247,6 +247,8 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.PUT("/automations", automationHandler.Save)
 				webguiGroup.DELETE("/automations", automationHandler.Delete)
 				webguiGroup.POST("/automations/trigger", automationHandler.Trigger)
+				webguiGroup.GET("/automations/executions", automationHandler.ListExecutions)
+				webguiGroup.POST("/automations/executions/retry", automationHandler.RetryExecution)
 
 				// Sync log routes
 				// 同步日志路由

@@ -62,6 +62,7 @@ const (
 // SyncLog 同步日志领域模型
 type SyncLog struct {
 	ID            int64         // Record ID // 记录 ID
+	EventID       string        // Stable automation event ID // 稳定的自动化事件 ID
 	UID           int64         // User ID // 用户 ID
 	VaultID       int64         // Vault ID // 笔记本 ID
 	Type          SyncLogType   // Resource type: note / file / setting // 资源类型

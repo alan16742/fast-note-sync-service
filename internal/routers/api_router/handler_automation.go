@@ -97,6 +97,65 @@ func (h *AutomationHandler) Trigger(c *gin.Context) {
 	response.ToResponse(code.Success.WithDetails("Automation trigger completed"))
 }
 
+// ListExecutions returns execution records for the current user.
+// @Summary List automation executions
+// @Tags Automation
+// @Security UserAuthToken
+// @Produce json
+// @Param params query dto.AutomationExecutionListRequest true "Automation execution filters"
+// @Success 200 {object} pkgapp.Res{data=pkgapp.ListRes{list=[]dto.AutomationExecutionDTO}} "Success"
+// @Router /api/automations/executions [get]
+func (h *AutomationHandler) ListExecutions(c *gin.Context) {
+	response := pkgapp.NewResponse(c)
+	params := &dto.AutomationExecutionListRequest{}
+	pager := pkgapp.NewPager(c)
+	if valid, errs := pkgapp.BindAndValid(c, params); !valid {
+		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
+		return
+	}
+	uid := pkgapp.GetUID(c)
+	if uid == 0 {
+		response.ToResponse(code.ErrorNotUserAuthToken)
+		return
+	}
+	items, total, err := h.App.AutomationService.ListExecutions(c.Request.Context(), uid, params.TriggerID, pager.Page, pager.PageSize)
+	if err != nil {
+		h.logError(c, "AutomationHandler.ListExecutions", err)
+		apperrors.ErrorResponse(c, err)
+		return
+	}
+	response.ToResponseList(code.Success, items, int(total))
+}
+
+// RetryExecution retries only actions that did not succeed in an execution.
+// @Summary Retry automation execution
+// @Tags Automation
+// @Security UserAuthToken
+// @Accept json
+// @Produce json
+// @Param request body dto.AutomationExecutionRetryRequest true "Execution ID"
+// @Success 200 {object} pkgapp.Res "Success"
+// @Router /api/automations/executions/retry [post]
+func (h *AutomationHandler) RetryExecution(c *gin.Context) {
+	response := pkgapp.NewResponse(c)
+	request := &dto.AutomationExecutionRetryRequest{}
+	if valid, errs := pkgapp.BindAndValid(c, request); !valid {
+		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
+		return
+	}
+	uid := pkgapp.GetUID(c)
+	if uid == 0 {
+		response.ToResponse(code.ErrorNotUserAuthToken)
+		return
+	}
+	if err := h.App.AutomationService.RetryExecution(c.Request.Context(), uid, request.ID); err != nil {
+		h.logError(c, "AutomationHandler.RetryExecution", err)
+		response.ToResponse(code.ErrorInvalidParams.WithDetails(err.Error()))
+		return
+	}
+	response.ToResponse(code.Success.WithDetails("Automation execution retried"))
+}
+
 func (h *AutomationHandler) logError(c *gin.Context, method string, err error) {
 	h.App.Logger().Warn(method, zap.Error(err), zap.String("traceId", middleware.GetTraceID(c.Request.Context())))
 }

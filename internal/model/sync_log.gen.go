@@ -11,6 +11,7 @@ const TableNameSyncLog = "sync_log"
 // SyncLog mapped from table <sync_log>
 type SyncLog struct {
 	ID            int64      `gorm:"column:id;primaryKey" json:"id" form:"id"`
+	EventID       string     `gorm:"column:event_id;type:varchar(80);not null;default:'';index:idx_sync_log_event_id" json:"eventId" form:"eventId"`
 	UID           int64      `gorm:"column:uid;not null;index:idx_sync_log_uid_type_action,priority:1;index:idx_sync_log_uid_created_at,priority:1;default:0" json:"uid" form:"uid"`
 	VaultID       int64      `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
 	Type          string     `gorm:"column:type;type:varchar(255);not null;index:idx_sync_log_uid_type_action,priority:2;default:''" json:"type" form:"type"`

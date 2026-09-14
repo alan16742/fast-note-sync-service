@@ -15,12 +15,21 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/workerpool"
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
 
 const automationDefaultTimezone = "Asia/Shanghai"
+
+const (
+	// Execution history is an audit/idempotency surface, not an unbounded event
+	// store. Keep recent history for retries while bounding terminal rows.
+	automationExecutionRetentionPeriod = 30 * 24 * time.Hour
+	automationExecutionMaxRetained     = 1000
+	automationExecutionCleanupInterval = 24 * time.Hour
+)
 
 // automationRulesCacheTTL bounds how long a per-user enabled-rule snapshot may be
 // reused, so a burst of note saves doesn't repeat the same ListEnabled query.
@@ -36,6 +45,8 @@ type AutomationService interface {
 	Save(ctx context.Context, uid int64, request *dto.AutomationTriggerRequest) (*dto.AutomationTriggerDTO, error)
 	Delete(ctx context.Context, uid, id int64) error
 	Trigger(ctx context.Context, uid int64, request *dto.AutomationRunRequest) error
+	ListExecutions(ctx context.Context, uid, triggerID int64, page, pageSize int) ([]*dto.AutomationExecutionDTO, int64, error)
+	RetryExecution(ctx context.Context, uid, executionID int64) error
 	Publish(ctx context.Context, event *domain.AutomationEvent)
 	PublishNoteChange(ctx context.Context, event *domain.ContentChangeEvent)
 	Start()
@@ -66,6 +77,7 @@ type automationService struct {
 	gitSyncService GitSyncService
 	webhookService WebhookService
 	pool           *workerpool.Pool
+	executionRepo  domain.AutomationExecutionRepository
 	logger         *zap.Logger
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -88,15 +100,20 @@ func NewAutomationService(
 	webhookService WebhookService,
 	pool *workerpool.Pool,
 	logger *zap.Logger,
+	executionRepos ...domain.AutomationExecutionRepository,
 ) AutomationService {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	var executionRepo domain.AutomationExecutionRepository
+	if len(executionRepos) > 0 {
+		executionRepo = executionRepos[0]
+	}
 	return &automationService{
 		repo: repo, vaultRepo: vaultRepo, backupService: backupService, gitSyncService: gitSyncService,
 		webhookService: webhookService,
-		pool:           pool, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
+		pool:           pool, executionRepo: executionRepo, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
 		rulesCache: make(map[int64]*automationUserRulesCache),
 	}
 }
@@ -116,6 +133,9 @@ func (s *automationService) List(ctx context.Context, uid int64) ([]*dto.Automat
 func (s *automationService) Save(ctx context.Context, uid int64, request *dto.AutomationTriggerRequest) (*dto.AutomationTriggerDTO, error) {
 	trigger, err := automationFromRequest(request, uid)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateAutomationTargets(ctx, uid, trigger.Actions); err != nil {
 		return nil, err
 	}
 	// Validate the vault in the same user scope before persisting the rule.
@@ -184,6 +204,96 @@ func (s *automationService) targetReuseWarnings(ctx context.Context, uid int64, 
 	return warnings
 }
 
+func (s *automationService) validateAutomationTargets(ctx context.Context, uid int64, actions []domain.AutomationAction) error {
+	needBackup, needGit, needWebhook := false, false, false
+	for _, action := range actions {
+		switch action.Type {
+		case domain.AutomationTargetBackup:
+			needBackup = true
+		case domain.AutomationTargetGit:
+			needGit = true
+		case domain.AutomationTargetWebhook:
+			needWebhook = true
+		}
+	}
+
+	if needBackup {
+		if s.backupService == nil {
+			return errors.New("backup service is unavailable")
+		}
+		configs, err := s.backupService.GetConfigs(ctx, uid)
+		if err != nil {
+			return fmt.Errorf("load backup targets: %w", err)
+		}
+		for _, action := range actions {
+			if action.Type != domain.AutomationTargetBackup {
+				continue
+			}
+			found := false
+			for _, config := range configs {
+				if config != nil && config.ID == action.ConfigID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("backup target #%d was not found for this user", action.ConfigID)
+			}
+		}
+	}
+
+	if needGit {
+		if s.gitSyncService == nil {
+			return errors.New("git sync service is unavailable")
+		}
+		configs, err := s.gitSyncService.GetConfigs(ctx, uid)
+		if err != nil {
+			return fmt.Errorf("load git targets: %w", err)
+		}
+		for _, action := range actions {
+			if action.Type != domain.AutomationTargetGit {
+				continue
+			}
+			found := false
+			for _, config := range configs {
+				if config != nil && config.ID == action.ConfigID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("git target #%d was not found for this user", action.ConfigID)
+			}
+		}
+	}
+
+	if needWebhook {
+		if s.webhookService == nil {
+			return errors.New("webhook service is unavailable")
+		}
+		channels, err := s.webhookService.List(ctx, uid)
+		if err != nil {
+			return fmt.Errorf("load webhook targets: %w", err)
+		}
+		for _, action := range actions {
+			if action.Type != domain.AutomationTargetWebhook {
+				continue
+			}
+			found := false
+			for _, channel := range channels {
+				if channel != nil && channel.ID == action.ConfigID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("webhook target #%d was not found for this user", action.ConfigID)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *automationService) Delete(ctx context.Context, uid, id int64) error {
 	if id <= 0 {
 		return errors.New("automation trigger id is required")
@@ -224,7 +334,25 @@ func (s *automationService) Trigger(ctx context.Context, uid int64, request *dto
 	if !automationTriggerMatches(trigger, event) {
 		return errors.New("manual event does not match automation trigger conditions")
 	}
-	return s.dispatchTrigger(ctx, trigger, event)
+	return s.executeTrigger(ctx, trigger, event)
+}
+
+func (s *automationService) ListExecutions(ctx context.Context, uid, triggerID int64, page, pageSize int) ([]*dto.AutomationExecutionDTO, int64, error) {
+	if uid <= 0 {
+		return nil, 0, errors.New("user id is required")
+	}
+	if s.executionRepo == nil {
+		return []*dto.AutomationExecutionDTO{}, 0, nil
+	}
+	executions, total, err := s.executionRepo.List(ctx, uid, triggerID, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	result := make([]*dto.AutomationExecutionDTO, 0, len(executions))
+	for _, execution := range executions {
+		result = append(result, automationExecutionToDTO(execution))
+	}
+	return result, total, nil
 }
 
 // Publish queues all enabled triggers for an event. It intentionally has no
@@ -263,8 +391,8 @@ func (s *automationService) publishNow(ctx context.Context, event *domain.Automa
 			continue
 		}
 		s.enrichEvent(ctx, event)
-		if err := s.dispatchTrigger(ctx, trigger, event); err != nil {
-			s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.Error(err))
+		if err := s.executeTrigger(ctx, trigger, event); err != nil {
+			s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
 		}
 	}
 }
@@ -331,34 +459,265 @@ func (s *automationService) PublishNoteChange(ctx context.Context, event *domain
 }
 
 func (s *automationService) dispatchTrigger(ctx context.Context, trigger *domain.AutomationTrigger, event *domain.AutomationEvent) error {
+	return s.dispatchTriggerObserved(ctx, trigger, event, nil)
+}
+
+type automationActionObserver func(index int, action domain.AutomationAction, status domain.AutomationExecutionStatus, cause error, at time.Time)
+
+func (s *automationService) dispatchTriggerObserved(ctx context.Context, trigger *domain.AutomationTrigger, event *domain.AutomationEvent, observe automationActionObserver) error {
+	return s.dispatchTriggerSelected(ctx, trigger, event, nil, observe)
+}
+
+func (s *automationService) dispatchTriggerSelected(ctx context.Context, trigger *domain.AutomationTrigger, event *domain.AutomationEvent, selected map[int]struct{}, observe automationActionObserver) error {
 	if trigger == nil || event == nil {
 		return nil
 	}
 	var firstErr error
-	for _, action := range trigger.Actions {
+	for index, action := range trigger.Actions {
+		if selected != nil {
+			if _, ok := selected[index]; !ok {
+				continue
+			}
+		}
 		action := action
+		if observe != nil {
+			observe(index, action, domain.AutomationExecutionRunning, nil, time.Now().UTC())
+		}
 		submit := func(taskCtx context.Context) error {
 			return s.executeAction(taskCtx, trigger.ID, event, action)
 		}
+		var actionErr error
 		if s.pool == nil {
-			if err := submit(ctx); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
+			actionErr = submit(ctx)
+		} else {
+			// Publish already runs outside the write request. Waiting here is
+			// intentional: a successful dispatch means every target action finished
+			// successfully, so cron can safely advance LastRunAt and manual callers
+			// receive the actual action error.
+			actionErr = s.pool.Submit(ctx, submit)
+		}
+		if actionErr != nil {
+			if firstErr == nil {
+				firstErr = actionErr
+			}
+			s.logger.Warn("automation action failed",
+				zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID),
+				zap.String("targetType", action.Type), zap.Int64("configID", action.ConfigID), zap.Error(actionErr))
+			if observe != nil {
+				observe(index, action, automationExecutionStatusForError(actionErr), actionErr, time.Now().UTC())
 			}
 			continue
 		}
-		// Publish already runs outside the write request. Waiting here is
-		// intentional: a successful dispatch means every target action finished
-		// successfully, so cron can safely advance LastRunAt and manual callers
-		// receive the actual action error.
-		if err := s.pool.Submit(ctx, submit); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+		if observe != nil {
+			observe(index, action, domain.AutomationExecutionSucceeded, nil, time.Now().UTC())
 		}
 	}
 	return firstErr
+}
+
+func (s *automationService) executeTrigger(ctx context.Context, trigger *domain.AutomationTrigger, event *domain.AutomationEvent) error {
+	if trigger == nil || event == nil {
+		return nil
+	}
+	if s.executionRepo == nil {
+		return s.dispatchTrigger(ctx, trigger, event)
+	}
+
+	execution := &domain.AutomationExecution{
+		UID: trigger.UID, TriggerID: trigger.ID, VaultID: trigger.VaultID,
+		EventID: event.ID, EventType: event.Type, Status: domain.AutomationExecutionRunning,
+		StartedAt: time.Now().UTC(), Actions: make([]domain.AutomationActionExecution, len(trigger.Actions)),
+	}
+	for index, action := range trigger.Actions {
+		execution.Actions[index] = domain.AutomationActionExecution{
+			Type: action.Type, ConfigID: action.ConfigID, Status: domain.AutomationExecutionPending,
+		}
+	}
+
+	created, current, err := s.executionRepo.Start(ctx, execution)
+	if err != nil {
+		// Execution history must not make a note/file write fail. The action is
+		// still attempted, but the failure is visible in the service log.
+		s.logger.Warn("start automation execution record failed",
+			zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
+		return s.dispatchTrigger(ctx, trigger, event)
+	}
+	if current != nil {
+		execution = current
+	}
+	if !created {
+		if current != nil && current.Status == domain.AutomationExecutionSucceeded {
+			// The same event was delivered more than once. A successful execution
+			// is already complete, so do not repeat side effects.
+			return nil
+		}
+		if current != nil && current.Status == domain.AutomationExecutionRunning {
+			return errors.New("automation execution is already running")
+		}
+		if current != nil && current.Error != "" {
+			return fmt.Errorf("automation execution already completed: %s", current.Error)
+		}
+		return errors.New("automation execution already completed")
+	}
+
+	observe := s.automationActionObserver(ctx, execution, "update automation action execution failed")
+
+	err = s.dispatchTriggerObserved(ctx, trigger, event, observe)
+	execution.Status = domain.AutomationExecutionSucceeded
+	if err != nil {
+		execution.Status = automationExecutionStatusForError(err)
+		execution.Error = err.Error()
+		// Retain the payload only when a retry may need it. Successful executions
+		// keep metadata and action results without duplicating full note content.
+		execution.Event = *event
+	}
+	execution.FinishedAt = time.Now().UTC()
+	if updateErr := s.updateAutomationExecution(ctx, execution); updateErr != nil {
+		s.logger.Warn("finish automation execution record failed",
+			zap.Int64("executionID", execution.ID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(updateErr))
+	}
+	return err
+}
+
+func automationExecutionStatusForError(err error) domain.AutomationExecutionStatus {
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, workerpool.ErrTaskCancelled) || errors.Is(err, workerpool.ErrWorkerPoolClosed)) {
+		return domain.AutomationExecutionCancelled
+	}
+	return domain.AutomationExecutionFailed
+}
+
+func (s *automationService) updateAutomationExecution(ctx context.Context, execution *domain.AutomationExecution) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.executionRepo.Update(persistCtx, execution)
+	}
+	return s.executionRepo.Update(ctx, execution)
+}
+
+func (s *automationService) automationActionObserver(ctx context.Context, execution *domain.AutomationExecution, logMessage string) automationActionObserver {
+	return func(index int, action domain.AutomationAction, status domain.AutomationExecutionStatus, cause error, at time.Time) {
+		if index < 0 || index >= len(execution.Actions) {
+			return
+		}
+		actionState := &execution.Actions[index]
+		actionState.Type = action.Type
+		actionState.ConfigID = action.ConfigID
+		actionState.Status = status
+		if status == domain.AutomationExecutionRunning {
+			actionState.StartedAt = at
+			actionState.Error = ""
+		} else {
+			actionState.FinishedAt = at
+			if cause != nil {
+				actionState.Error = cause.Error()
+			} else {
+				actionState.Error = ""
+			}
+		}
+		if err := s.updateAutomationExecution(ctx, execution); err != nil {
+			s.logger.Warn(logMessage, zap.Int64("executionID", execution.ID), zap.Int("actionIndex", index), zap.Error(err))
+		}
+	}
+}
+
+func (s *automationService) RetryExecution(ctx context.Context, uid, executionID int64) error {
+	if s.executionRepo == nil {
+		return errors.New("automation execution history is unavailable")
+	}
+	if s.repo == nil {
+		return errors.New("automation repository is unavailable")
+	}
+	if uid <= 0 || executionID <= 0 {
+		return errors.New("automation execution id is required")
+	}
+	execution, err := s.executionRepo.GetByID(ctx, uid, executionID)
+	if err != nil {
+		return err
+	}
+	if execution == nil {
+		return errors.New("automation execution not found")
+	}
+	if execution.Status != domain.AutomationExecutionFailed && execution.Status != domain.AutomationExecutionCancelled {
+		return errors.New("only failed or cancelled automation executions can be retried")
+	}
+	trigger, err := s.repo.GetByID(ctx, execution.TriggerID, uid)
+	if err != nil {
+		return err
+	}
+	if trigger == nil {
+		return errors.New("automation trigger not found")
+	}
+	if !trigger.Enabled {
+		return errors.New("automation trigger is disabled")
+	}
+	if len(trigger.Actions) != len(execution.Actions) {
+		return errors.New("automation trigger actions changed; run the trigger again")
+	}
+	for index, action := range trigger.Actions {
+		if execution.Actions[index].Type != action.Type || execution.Actions[index].ConfigID != action.ConfigID {
+			return errors.New("automation trigger actions changed; run the trigger again")
+		}
+	}
+	event := execution.Event
+	if event.ID == "" {
+		return errors.New("automation execution event payload is unavailable")
+	}
+	event.UID = uid
+	event.VaultID = execution.VaultID
+	selected := make(map[int]struct{})
+	for index := range trigger.Actions {
+		if index >= len(execution.Actions) || execution.Actions[index].Status != domain.AutomationExecutionSucceeded {
+			selected[index] = struct{}{}
+			if index < len(execution.Actions) {
+				execution.Actions[index].Status = domain.AutomationExecutionPending
+				execution.Actions[index].Error = ""
+				execution.Actions[index].StartedAt = time.Time{}
+				execution.Actions[index].FinishedAt = time.Time{}
+			}
+		}
+	}
+	if len(selected) == 0 {
+		return errors.New("automation execution has no retryable actions")
+	}
+	execution.Status = domain.AutomationExecutionRunning
+	execution.Error = ""
+	execution.StartedAt = time.Now().UTC()
+	execution.FinishedAt = time.Time{}
+	claimed, err := s.executionRepo.ClaimRetry(ctx, execution)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return errors.New("automation execution is already running or no longer retryable")
+	}
+	observe := s.automationActionObserver(ctx, execution, "update retried automation action execution failed")
+	err = s.dispatchTriggerSelected(ctx, trigger, &event, selected, observe)
+	execution.Status = domain.AutomationExecutionSucceeded
+	if err != nil {
+		execution.Status = automationExecutionStatusForError(err)
+		execution.Error = err.Error()
+	}
+	execution.FinishedAt = time.Now().UTC()
+	if updateErr := s.updateAutomationExecution(ctx, execution); updateErr != nil {
+		s.logger.Warn("finish retried automation execution record failed", zap.Int64("executionID", execution.ID), zap.Error(updateErr))
+	}
+	if execution.EventType == domain.AutomationEventCron {
+		cursorAt := time.Now()
+		var cursorErr error
+		if err == nil {
+			cursorErr = s.repo.MarkRun(ctx, trigger.ID, uid, cursorAt)
+		} else {
+			cursorErr = s.repo.MarkAttempt(ctx, trigger.ID, uid, cursorAt)
+		}
+		if cursorErr != nil {
+			s.logger.Warn("update cron cursor after automation retry failed", zap.Int64("triggerID", trigger.ID), zap.Int64("executionID", execution.ID), zap.Error(cursorErr))
+		}
+	}
+	return err
 }
 
 func (s *automationService) executeAction(ctx context.Context, triggerID int64, event *domain.AutomationEvent, action domain.AutomationAction) error {
@@ -396,18 +755,46 @@ func (s *automationService) Start() {
 }
 
 func (s *automationService) runClock() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
 	defer close(s.doneCh)
+	s.cleanupAutomationExecutions()
 	s.pollTimeTriggers()
+	nextCleanupAt := time.Now().Add(automationExecutionCleanupInterval)
 	for {
+		// Recalculate the next wall-clock minute after every poll.
+		next := nextAutomationMinuteBoundary(time.Now())
+		timer := time.NewTimer(time.Until(next))
 		select {
-		case <-ticker.C:
+		case <-timer.C:
+			now := time.Now()
+			if !now.Before(nextCleanupAt) {
+				s.cleanupAutomationExecutions()
+				nextCleanupAt = now.Add(automationExecutionCleanupInterval)
+			}
 			s.pollTimeTriggers()
 		case <-s.ctx.Done():
+			timer.Stop()
 			return
 		}
 	}
+}
+
+func (s *automationService) cleanupAutomationExecutions() {
+	if s == nil || s.executionRepo == nil {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-automationExecutionRetentionPeriod)
+	deleted, err := s.executionRepo.Cleanup(s.ctx, cutoff, automationExecutionMaxRetained)
+	if err != nil {
+		s.logger.Warn("cleanup automation execution history failed", zap.Error(err))
+		return
+	}
+	if deleted > 0 {
+		s.logger.Info("cleaned up automation execution history", zap.Int64("deleted", deleted))
+	}
+}
+
+func nextAutomationMinuteBoundary(now time.Time) time.Time {
+	return now.Truncate(time.Minute).Add(time.Minute)
 }
 
 func (s *automationService) pollTimeTriggers() {
@@ -434,6 +821,7 @@ func (s *automationService) pollTimeTriggers() {
 		due := false
 		cronRuleCount := 0
 		cronMatches := 0
+		var matchedOccurrences []time.Time
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		for _, eventRule := range trigger.Events {
 			if eventRule.Type != domain.AutomationEventCron {
@@ -445,8 +833,10 @@ func (s *automationService) pollTimeTriggers() {
 				s.logger.Warn("invalid automation schedule", zap.Int64("triggerID", trigger.ID), zap.Error(parseErr))
 				continue
 			}
-			if !schedule.Next(last).After(localNow) {
+			next := schedule.Next(last)
+			if !next.After(localNow) {
 				cronMatches++
+				matchedOccurrences = append(matchedOccurrences, next)
 			}
 		}
 		if trigger.MatchMode == domain.AutomationMatchAll {
@@ -457,14 +847,26 @@ func (s *automationService) pollTimeTriggers() {
 		if !due {
 			continue
 		}
+		occurrence := localNow.Truncate(time.Minute)
+		if len(matchedOccurrences) > 0 {
+			occurrence = matchedOccurrences[0]
+			for _, candidate := range matchedOccurrences[1:] {
+				if trigger.MatchMode == domain.AutomationMatchAll && candidate.After(occurrence) {
+					occurrence = candidate
+				}
+				if trigger.MatchMode != domain.AutomationMatchAll && candidate.Before(occurrence) {
+					occurrence = candidate
+				}
+			}
+		}
 		event := &domain.AutomationEvent{
-			ID: uuid.NewString(), OccurredAt: now.UTC(), UID: trigger.UID,
+			ID: automationCronEventID(trigger.ID, occurrence), OccurredAt: occurrence.UTC(), UID: trigger.UID,
 			VaultID: trigger.VaultID, Type: domain.AutomationEventCron,
 			Action: "cron", Source: "automation_clock",
 		}
 		s.enrichEvent(s.ctx, event)
-		if err := s.dispatchTrigger(s.ctx, trigger, event); err != nil {
-			s.logger.Warn("dispatch time automation trigger failed", zap.Int64("triggerID", trigger.ID), zap.Error(err))
+		if err := s.executeTrigger(s.ctx, trigger, event); err != nil {
+			s.logger.Warn("dispatch time automation trigger failed", zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
 			// Queue saturation/closure means no action was attempted; leave the
 			// cursor untouched so the next scheduler tick can retry promptly.
 			if !errors.Is(err, workerpool.ErrWorkerPoolFull) && !errors.Is(err, workerpool.ErrWorkerPoolClosed) && !errors.Is(err, workerpool.ErrTaskCancelled) && !errors.Is(err, context.Canceled) {
@@ -478,6 +880,10 @@ func (s *automationService) pollTimeTriggers() {
 			s.logger.Warn("mark automation trigger run failed", zap.Int64("triggerID", trigger.ID), zap.Error(err))
 		}
 	}
+}
+
+func automationCronEventID(triggerID int64, occurrence time.Time) string {
+	return fmt.Sprintf("cron:%d:%d", triggerID, occurrence.Unix())
 }
 
 func (s *automationService) Shutdown(ctx context.Context) error {
@@ -650,6 +1056,24 @@ func validateAutomationEventCombination(matchMode string, events []domain.Automa
 			return errors.New("all mode only supports conditions of one event type; use any (OR) for different event types")
 		}
 	}
+	if first == domain.AutomationEventFileBehavior {
+		commonActions := make(map[string]struct{}, len(events[0].EventActions))
+		for _, action := range events[0].EventActions {
+			commonActions[action] = struct{}{}
+		}
+		for _, event := range events[1:] {
+			next := make(map[string]struct{}, len(event.EventActions))
+			for _, action := range event.EventActions {
+				if _, ok := commonActions[action]; ok {
+					next[action] = struct{}{}
+				}
+			}
+			commonActions = next
+		}
+		if len(commonActions) == 0 {
+			return errors.New("all mode file conditions must share at least one event action")
+		}
+	}
 	return nil
 }
 
@@ -732,6 +1156,14 @@ func automationTriggerHasEvent(trigger *domain.AutomationTrigger, eventType doma
 
 func automationEventRuleMatches(rule domain.AutomationEventRule, event *domain.AutomationEvent) bool {
 	if rule.Type == domain.AutomationEventNoteContent {
+		// A content predicate must be tied to a content change. NoteService also
+		// publishes mtime-only, delete, restore, and rename events with the
+		// current note body attached; matching the body alone would retrigger a
+		// "content contains" rule for those unrelated changes. Empty
+		// ChangedFields is treated as legacy/unknown input for compatibility.
+		if rule.ContentContains != "" && len(event.ChangedFields) > 0 && !containsString(event.ChangedFields, "content") {
+			return false
+		}
 		if rule.ContentContains != "" && !strings.Contains(event.Content, rule.ContentContains) {
 			return false
 		}
@@ -806,6 +1238,25 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 	return result
 }
 
+func automationExecutionToDTO(execution *domain.AutomationExecution) *dto.AutomationExecutionDTO {
+	if execution == nil {
+		return nil
+	}
+	actions := make([]dto.AutomationActionExecutionDTO, 0, len(execution.Actions))
+	for _, action := range execution.Actions {
+		actions = append(actions, dto.AutomationActionExecutionDTO{
+			Type: action.Type, ConfigID: action.ConfigID, Status: string(action.Status), Error: action.Error,
+			StartedAt: timex.Time(action.StartedAt), FinishedAt: timex.Time(action.FinishedAt),
+		})
+	}
+	return &dto.AutomationExecutionDTO{
+		ID: execution.ID, UID: execution.UID, TriggerID: execution.TriggerID, VaultID: execution.VaultID,
+		EventID: execution.EventID, EventType: execution.EventType, Status: execution.Status, Error: execution.Error,
+		Actions: actions, StartedAt: timex.Time(execution.StartedAt), FinishedAt: timex.Time(execution.FinishedAt),
+		CreatedAt: timex.Time(execution.CreatedAt), UpdatedAt: timex.Time(execution.UpdatedAt),
+	}
+}
+
 func automationEventFromNote(event *domain.ContentChangeEvent) *domain.AutomationEvent {
 	return &domain.AutomationEvent{
 		ID: event.ID, OccurredAt: event.OccurredAt, UID: event.UID, VaultID: event.VaultID,
@@ -827,8 +1278,16 @@ func automationEventFromSyncLog(log *domain.SyncLog) *domain.AutomationEvent {
 	case domain.SyncLogActionDelete:
 		action = "permanent_delete"
 	}
+	eventID := log.EventID
+	if eventID == "" {
+		if log.ID > 0 {
+			eventID = fmt.Sprintf("sync-log:%d", log.ID)
+		} else {
+			eventID = uuid.NewString()
+		}
+	}
 	return &domain.AutomationEvent{
-		ID: uuid.NewString(), OccurredAt: time.Time(log.CreatedAt), UID: log.UID, VaultID: log.VaultID,
+		ID: eventID, OccurredAt: time.Time(log.CreatedAt), UID: log.UID, VaultID: log.VaultID,
 		Type: domain.AutomationEventFileBehavior, Action: action, Path: log.Path, OldPath: log.OldPath, PathHash: log.PathHash,
 		ChangedFields: splitChangedFields(log.ChangedFields), Size: log.Size,
 		ClientType: log.ClientType, ClientName: log.ClientName, ClientVersion: log.ClientVersion,

@@ -386,15 +386,17 @@ func (d *Dao) resolveConfig(key string) config.DatabaseConfig {
 }
 
 func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
-	// Use read lock to check if already exists
-	// 使用读锁检查是否已存在
-	d.mu.RLock()
+	// The cache hit also updates lastUsed, so it needs the write lock rather
+	// than a read lock. Concurrent automation retry claims can reach this path.
+	// 命中缓存时也会更新 lastUsed，因此必须使用写锁而不是读锁。
+	// 并发自动化重试抢占可能同时进入这里。
+	d.mu.Lock()
 	if entry, ok := d.KeyDb[key]; ok {
 		entry.lastUsed = time.Now()
-		d.mu.RUnlock()
+		d.mu.Unlock()
 		return entry.db
 	}
-	d.mu.RUnlock()
+	d.mu.Unlock()
 
 	// Get configuration
 	// 获取配置

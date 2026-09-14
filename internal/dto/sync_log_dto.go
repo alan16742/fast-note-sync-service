@@ -16,6 +16,7 @@ type SyncLogListRequest struct {
 // SyncLogDTO 同步日志数据传输对象
 type SyncLogDTO struct {
 	ID            int64      `json:"-"`             // Record ID // 记录 ID
+	EventID       string     `json:"eventId"`       // Stable automation event ID // 稳定的自动化事件 ID
 	VaultID       int64      `json:"vaultId"`       // Vault ID // 笔记本 ID
 	Type          string     `json:"type"`          // Resource type // 资源类型
 	Action        string     `json:"action"`        // Action type // 操作类型

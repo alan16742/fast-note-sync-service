@@ -77,6 +77,23 @@ func TestAutomationTriggerMatchesAllBranchesAndRequiresFileActions(t *testing.T)
 	}
 }
 
+func TestAutomationContentPredicateRequiresContentChange(t *testing.T) {
+	trigger := &domain.AutomationTrigger{
+		Enabled: true, VaultID: 1,
+		Events: []domain.AutomationEventRule{{Type: domain.AutomationEventNoteContent, ContentContains: "release"}},
+	}
+	if automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release notes", ChangedFields: []string{"mtime"},
+	}) {
+		t.Fatal("mtime-only note changes must not trigger a content predicate")
+	}
+	if !automationTriggerMatches(trigger, &domain.AutomationEvent{
+		Type: domain.AutomationEventNoteContent, VaultID: 1, Action: "modify", Content: "release notes", ChangedFields: []string{"content", "mtime"},
+	}) {
+		t.Fatal("content changes should trigger a matching content predicate")
+	}
+}
+
 func TestAutomationFromRequestValidatesBranchesAndTargets(t *testing.T) {
 	trigger, err := automationFromRequest(&dto.AutomationTriggerRequest{
 		Name: "nightly git", Enabled: true, VaultID: 9, Timezone: "Asia/Shanghai",
@@ -189,6 +206,13 @@ func TestValidateAutomationEventCombination(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "use any (OR)") {
 		t.Fatalf("mixed-type all should explain the OR alternative, got %v", err)
 	}
+	err = validateAutomationEventCombination("all", []domain.AutomationEventRule{
+		{Type: domain.AutomationEventFileBehavior, EventActions: []string{"create"}},
+		{Type: domain.AutomationEventFileBehavior, EventActions: []string{"modify"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "share at least one event action") {
+		t.Fatalf("impossible all file conditions should be rejected, got %v", err)
+	}
 }
 
 func TestAutomationEventFromSyncLogNormalizesFileActions(t *testing.T) {
@@ -205,6 +229,19 @@ func TestAutomationEventFromSyncLogNormalizesFileActions(t *testing.T) {
 		if event.Type != domain.AutomationEventFileBehavior || event.Action != test.want {
 			t.Fatalf("action %q mapped to %#v, want %q", test.action, event, test.want)
 		}
+	}
+}
+
+func TestAutomationEventFromSyncLogKeepsStableEventID(t *testing.T) {
+	log := &domain.SyncLog{UID: 1, VaultID: 2, EventID: "sync-event-1", Action: domain.SyncLogActionModify, Path: "a.bin"}
+	first := automationEventFromSyncLog(log)
+	second := automationEventFromSyncLog(log)
+	if first.ID != "sync-event-1" || second.ID != first.ID {
+		t.Fatalf("event IDs are not stable: first=%q second=%q", first.ID, second.ID)
+	}
+	legacy := automationEventFromSyncLog(&domain.SyncLog{ID: 9, UID: 1, VaultID: 2, Action: domain.SyncLogActionModify, Path: "a.bin"})
+	if legacy.ID != "sync-log:9" {
+		t.Fatalf("legacy sync log event ID = %q, want deterministic ID", legacy.ID)
 	}
 }
 

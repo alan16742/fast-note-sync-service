@@ -75,7 +75,7 @@ func initServices(cfg *AppConfig, infra *Infra, repos *Repositories, logger *zap
 	s.GitSyncService = service.NewGitSyncService(repos.GitSyncRepo, repos.NoteRepo, repos.FolderRepo, repos.FileRepo, repos.VaultRepo, repos.SettingRepo, &cfg.Git, logger)
 
 	s.WebhookService = service.NewWebhookService(repos.WebhookRepo)
-	s.AutomationService = service.NewAutomationService(repos.AutomationRepo, repos.VaultRepo, s.BackupService, s.GitSyncService, s.WebhookService, infra.workerPool, logger)
+	s.AutomationService = service.NewAutomationService(repos.AutomationRepo, repos.VaultRepo, s.BackupService, s.GitSyncService, s.WebhookService, infra.workerPool, logger, repos.AutomationExecutionRepo)
 
 	// Initialize SyncLogService after AutomationService so file events can be
 	// published through the same trigger layer.

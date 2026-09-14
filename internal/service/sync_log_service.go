@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 
@@ -138,6 +139,7 @@ func (s *syncLogService) Log(
 	opts ...SyncLogOption,
 ) {
 	entry := &domain.SyncLog{
+		EventID:       uuid.NewString(),
 		UID:           uid,
 		VaultID:       vaultID,
 		Type:          logType,
@@ -282,6 +284,7 @@ func (s *syncLogService) CleanupByTime(ctx context.Context, cutoffTime int64) er
 func (s *syncLogService) domainToDTO(l *domain.SyncLog) *dto.SyncLogDTO {
 	return &dto.SyncLogDTO{
 		ID:            l.ID,
+		EventID:       l.EventID,
 		VaultID:       l.VaultID,
 		Type:          string(l.Type),
 		Action:        string(l.Action),

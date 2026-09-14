@@ -91,6 +91,34 @@ definitions:
       uid:
         type: string
     type: object
+  domain.AutomationEventType:
+    enum:
+    - cron
+    - note_content
+    - file_behavior
+    - todo_reminder
+    - manual
+    type: string
+    x-enum-varnames:
+    - AutomationEventCron
+    - AutomationEventNoteContent
+    - AutomationEventFileBehavior
+    - AutomationEventTodoReminder
+    - AutomationEventManual
+  domain.AutomationExecutionStatus:
+    enum:
+    - pending
+    - running
+    - succeeded
+    - failed
+    - cancelled
+    type: string
+    x-enum-varnames:
+    - AutomationExecutionPending
+    - AutomationExecutionRunning
+    - AutomationExecutionSucceeded
+    - AutomationExecutionFailed
+    - AutomationExecutionCancelled
   dto.AdminCPUInfo:
     properties:
       loadAvg:
@@ -506,6 +534,59 @@ definitions:
       registerIsEnable:
         description: Registration enablement // 是否开启注册
         type: boolean
+    type: object
+  dto.AutomationActionExecutionDTO:
+    properties:
+      configId:
+        type: integer
+      error:
+        type: string
+      finishedAt:
+        type: string
+      startedAt:
+        type: string
+      status:
+        type: string
+      type:
+        type: string
+    type: object
+  dto.AutomationExecutionDTO:
+    properties:
+      actions:
+        items:
+          $ref: '#/definitions/dto.AutomationActionExecutionDTO'
+        type: array
+      createdAt:
+        type: string
+      error:
+        type: string
+      eventId:
+        type: string
+      eventType:
+        $ref: '#/definitions/domain.AutomationEventType'
+      finishedAt:
+        type: string
+      id:
+        type: integer
+      startedAt:
+        type: string
+      status:
+        $ref: '#/definitions/domain.AutomationExecutionStatus'
+      triggerId:
+        type: integer
+      uid:
+        type: integer
+      updatedAt:
+        type: string
+      vaultId:
+        type: integer
+    type: object
+  dto.AutomationExecutionRetryRequest:
+    properties:
+      id:
+        type: integer
+    required:
+    - id
     type: object
   dto.BackupConfigDTO:
     properties:
@@ -1879,8 +1960,14 @@ definitions:
       createdAt:
         description: Log creation time // 创建时间
         type: string
+      eventId:
+        description: Stable automation event ID // 稳定的自动化事件 ID
+        type: string
       message:
         description: Additional message // 附加消息
+        type: string
+      oldPath:
+        description: Previous path, set on rename // 原路径，重命名时填写
         type: string
       path:
         description: Resource path // 资源路径
@@ -2635,6 +2722,59 @@ paths:
       summary: User logout
       tags:
       - User
+  /api/automations/executions:
+    get:
+      parameters:
+      - in: query
+        name: triggerId
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  allOf:
+                  - $ref: '#/definitions/app.ListRes'
+                  - properties:
+                      list:
+                        items:
+                          $ref: '#/definitions/dto.AutomationExecutionDTO'
+                        type: array
+                    type: object
+              type: object
+      security:
+      - UserAuthToken: []
+      summary: List automation executions
+      tags:
+      - Automation
+  /api/automations/executions/retry:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Execution ID
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.AutomationExecutionRetryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: '#/definitions/app.Res'
+      security:
+      - UserAuthToken: []
+      summary: Retry automation execution
+      tags:
+      - Automation
   /api/backup/config:
     delete:
       parameters:
