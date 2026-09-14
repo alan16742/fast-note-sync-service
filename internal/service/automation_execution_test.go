@@ -202,6 +202,7 @@ func TestDispatchTriggerWaitsForActionResult(t *testing.T) {
 	backup := &automationBackupStub{err: wantErr}
 	svc := &automationService{
 		backupService: backup,
+		executors:     defaultAutomationActionExecutorRegistry(backup, nil, nil),
 		pool:          newAutomationExecutionPool(t),
 		logger:        zap.NewNop(),
 	}

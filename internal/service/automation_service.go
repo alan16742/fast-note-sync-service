@@ -76,6 +76,7 @@ type automationService struct {
 	backupService  BackupService
 	gitSyncService GitSyncService
 	webhookService WebhookService
+	executors      *AutomationActionExecutorRegistry
 	pool           *workerpool.Pool
 	executionRepo  domain.AutomationExecutionRepository
 	logger         *zap.Logger
@@ -102,8 +103,32 @@ func NewAutomationService(
 	logger *zap.Logger,
 	executionRepos ...domain.AutomationExecutionRepository,
 ) AutomationService {
+	return NewAutomationServiceWithExecutorRegistry(
+		repo, vaultRepo, backupService, gitSyncService, webhookService, pool, logger,
+		defaultAutomationActionExecutorRegistry(backupService, gitSyncService, webhookService), executionRepos...,
+	)
+}
+
+// NewAutomationServiceWithExecutorRegistry creates the central automation
+// coordinator with an explicit action executor registry. The target services
+// remain separate dependencies for Save-time ownership validation; action
+// execution itself only goes through executors.
+func NewAutomationServiceWithExecutorRegistry(
+	repo domain.AutomationRepository,
+	vaultRepo domain.VaultRepository,
+	backupService BackupService,
+	gitSyncService GitSyncService,
+	webhookService WebhookService,
+	pool *workerpool.Pool,
+	logger *zap.Logger,
+	executors *AutomationActionExecutorRegistry,
+	executionRepos ...domain.AutomationExecutionRepository,
+) AutomationService {
 	if logger == nil {
 		logger = zap.NewNop()
+	}
+	if executors == nil {
+		executors = defaultAutomationActionExecutorRegistry(backupService, gitSyncService, webhookService)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	var executionRepo domain.AutomationExecutionRepository
@@ -112,8 +137,8 @@ func NewAutomationService(
 	}
 	return &automationService{
 		repo: repo, vaultRepo: vaultRepo, backupService: backupService, gitSyncService: gitSyncService,
-		webhookService: webhookService,
-		pool:           pool, executionRepo: executionRepo, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
+		webhookService: webhookService, executors: executors,
+		pool: pool, executionRepo: executionRepo, logger: logger, ctx: ctx, cancel: cancel, doneCh: make(chan struct{}),
 		rulesCache: make(map[int64]*automationUserRulesCache),
 	}
 }
@@ -724,25 +749,16 @@ func (s *automationService) executeAction(ctx context.Context, triggerID int64, 
 	if action.ConfigID <= 0 {
 		return errors.New("automation target config id is required")
 	}
-	switch strings.ToLower(strings.TrimSpace(action.Type)) {
-	case domain.AutomationTargetBackup:
-		if s.backupService == nil {
-			return errors.New("backup service is unavailable")
-		}
-		return s.backupService.ExecuteUserBackup(ctx, event.UID, action.ConfigID, &domain.AutomationExecutionContext{UID: event.UID, TriggerID: triggerID, VaultID: event.VaultID, EventID: event.ID, OccurredAt: event.OccurredAt})
-	case domain.AutomationTargetGit:
-		if s.gitSyncService == nil {
-			return errors.New("git sync service is unavailable")
-		}
-		return s.gitSyncService.ExecuteSync(ctx, event.UID, action.ConfigID, &domain.AutomationExecutionContext{UID: event.UID, TriggerID: triggerID, VaultID: event.VaultID, EventID: event.ID, OccurredAt: event.OccurredAt})
-	case domain.AutomationTargetWebhook:
-		if s.webhookService == nil {
-			return errors.New("webhook service is unavailable")
-		}
-		return s.webhookService.DeliverEvent(ctx, event.UID, action.ConfigID, contentChangeEventFromAutomation(event))
-	default:
-		return fmt.Errorf("unsupported automation target: %s", action.Type)
+	if event == nil {
+		return errors.New("automation event is required")
 	}
+	executor, ok := s.executors.Get(action.Type)
+	if !ok {
+		return automationActionExecutorError(action.Type)
+	}
+	return executor.Execute(ctx, action, &domain.AutomationExecutionContext{
+		UID: event.UID, TriggerID: triggerID, VaultID: event.VaultID, EventID: event.ID, OccurredAt: event.OccurredAt,
+	}, event)
 }
 
 func (s *automationService) Start() {

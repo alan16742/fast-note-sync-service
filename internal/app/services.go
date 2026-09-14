@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	"go.uber.org/zap"
 )
@@ -75,7 +76,17 @@ func initServices(cfg *AppConfig, infra *Infra, repos *Repositories, logger *zap
 	s.GitSyncService = service.NewGitSyncService(repos.GitSyncRepo, repos.NoteRepo, repos.FolderRepo, repos.FileRepo, repos.VaultRepo, repos.SettingRepo, &cfg.Git, logger)
 
 	s.WebhookService = service.NewWebhookService(repos.WebhookRepo)
-	s.AutomationService = service.NewAutomationService(repos.AutomationRepo, repos.VaultRepo, s.BackupService, s.GitSyncService, s.WebhookService, infra.workerPool, logger, repos.AutomationExecutionRepo)
+	executors := service.NewAutomationActionExecutorRegistry()
+	if err := executors.Register(domain.AutomationTargetGit, service.NewGitExecutor(s.GitSyncService)); err != nil {
+		panic(err)
+	}
+	if err := executors.Register(domain.AutomationTargetBackup, service.NewBackupExecutor(s.BackupService)); err != nil {
+		panic(err)
+	}
+	if err := executors.Register(domain.AutomationTargetWebhook, service.NewWebhookExecutor(s.WebhookService)); err != nil {
+		panic(err)
+	}
+	s.AutomationService = service.NewAutomationServiceWithExecutorRegistry(repos.AutomationRepo, repos.VaultRepo, s.BackupService, s.GitSyncService, s.WebhookService, infra.workerPool, logger, executors, repos.AutomationExecutionRepo)
 
 	// Initialize SyncLogService after AutomationService so file events can be
 	// published through the same trigger layer.
