@@ -451,6 +451,7 @@ DROP TABLE IF EXISTS "automation_execution";
 
 CREATE TABLE "automation_execution" (
     "id"           integer PRIMARY KEY AUTOINCREMENT,
+    "revision"     integer NOT NULL DEFAULT 0,
     "uid"          integer NOT NULL,
     "trigger_id"   integer NOT NULL,
     "vault_id"     integer NOT NULL,

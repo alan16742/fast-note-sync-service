@@ -1,18 +1,56 @@
 package service
 
 import (
+	"context"
 	"net/url"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
+	"github.com/haierkeys/fast-note-sync-service/pkg/notification"
 	"github.com/stretchr/testify/assert"
 )
+
+type configuredNotificationRecorder struct {
+	notification.Sender
+	called bool
+}
+
+func (s *configuredNotificationRecorder) SendWithOptions(context.Context, string, string, map[string]string, notification.Message) error {
+	s.called = true
+	return nil
+}
+
+func TestOversizedCustomWebhookIsRejectedBeforeSending(t *testing.T) {
+	sender := &configuredNotificationRecorder{}
+	err := sendNotification(context.Background(), sender, &domain.WebhookSubscription{Provider: "custom", Method: "POST"}, notification.Message{Body: strings.Repeat("x", maxNotificationBodyBytes+1)})
+	assert.ErrorContains(t, err, "exceeds 8192")
+	assert.False(t, sender.called)
+}
 
 func TestMessageForNoteEvent(t *testing.T) {
 	message := messageForNoteEvent(&domain.ContentChangeEvent{VaultName: "ceshi", Action: domain.WebhookActionModify, Path: "test-note.md", Content: "- 1"})
 	assert.Equal(t, "Fast Note Sync: modify test-note.md", message.Title)
 	assert.Contains(t, message.Body, "- Vault: ceshi")
 	assert.Contains(t, message.Body, "- 1")
+}
+
+func TestCustomWebhookPreservesLiteralPayloadAndSignedQuery(t *testing.T) {
+	endpoint := "https://example.com/hook?z=a%20b&flag&x=%2f&x=second&task={{content}}"
+	message := messageForNoteEvent(&domain.ContentChangeEvent{Content: "a & b"}, &domain.WebhookSubscription{
+		Provider: domain.WebhookProviderCustom, URL: endpoint,
+	})
+	assert.Empty(t, message.Body)
+	assert.Equal(t, "https://example.com/hook?z=a%20b&flag&x=%2f&x=second&task=a+%26+b", message.Endpoint)
+	large := strings.Repeat("中", 4000)
+	message = messageForNoteEvent(&domain.ContentChangeEvent{Content: large}, &domain.WebhookSubscription{
+		Provider: domain.WebhookProviderCustom, BodyTemplate: `{"text":"{{content}}"}`,
+	})
+	assert.Equal(t, `{"text":"`+large+`"}`, message.Body, "raw requests must never be silently truncated")
+	body := limitNotificationBody(large)
+	assert.LessOrEqual(t, len(body), maxNotificationBodyBytes)
+	assert.True(t, utf8.ValidString(body))
 }
 
 func TestMessageForNoteEventRendersCustomTemplates(t *testing.T) {

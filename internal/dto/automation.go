@@ -2,7 +2,6 @@ package dto
 
 import (
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
-	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 )
 
 // AutomationActionDTO binds an automation trigger to an existing target
@@ -36,20 +35,21 @@ type AutomationTriggerRequest struct {
 // AutomationTriggerDTO is the safe API representation of an automation
 // trigger. It intentionally contains no target credentials.
 type AutomationTriggerDTO struct {
-	ID            int64                    `json:"id"`
-	UID           int64                    `json:"uid"`
-	Name          string                   `json:"name"`
-	Enabled       bool                     `json:"enabled"`
-	VaultID       int64                    `json:"vaultId"`
-	Timezone      string                   `json:"timezone"`
-	MatchMode     string                   `json:"matchMode"`
-	Events        []AutomationEventRuleDTO `json:"events"`
-	Actions       []AutomationActionDTO    `json:"actions"`
-	Warnings      []string                 `json:"warnings,omitempty"`
-	LastRunAt     string                   `json:"lastRunAt,omitempty"`
-	LastAttemptAt string                   `json:"lastAttemptAt,omitempty"`
-	CreatedAt     string                   `json:"createdAt"`
-	UpdatedAt     string                   `json:"updatedAt"`
+	ID              int64                    `json:"id"`
+	UID             int64                    `json:"uid"`
+	Name            string                   `json:"name"`
+	Enabled         bool                     `json:"enabled"`
+	VaultID         int64                    `json:"vaultId"`
+	Timezone        string                   `json:"timezone"`
+	MatchMode       string                   `json:"matchMode"`
+	Events          []AutomationEventRuleDTO `json:"events"`
+	Actions         []AutomationActionDTO    `json:"actions"`
+	Warnings        []string                 `json:"warnings,omitempty"`
+	LatestExecution *AutomationExecutionDTO  `json:"latestExecution,omitempty"`
+	LastRunAt       string                   `json:"lastRunAt,omitempty"`
+	LastAttemptAt   string                   `json:"lastAttemptAt,omitempty"`
+	CreatedAt       string                   `json:"createdAt"`
+	UpdatedAt       string                   `json:"updatedAt"`
 }
 
 // AutomationRunRequest identifies a manual trigger to execute.
@@ -66,12 +66,12 @@ type AutomationExecutionRetryRequest struct {
 }
 
 type AutomationActionExecutionDTO struct {
-	Type       string     `json:"type"`
-	ConfigID   int64      `json:"configId"`
-	Status     string     `json:"status"`
-	Error      string     `json:"error,omitempty"`
-	StartedAt  timex.Time `json:"startedAt"`
-	FinishedAt timex.Time `json:"finishedAt"`
+	Type       string `json:"type"`
+	ConfigID   int64  `json:"configId"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt"`
 }
 
 type AutomationExecutionDTO struct {
@@ -84,8 +84,8 @@ type AutomationExecutionDTO struct {
 	Status     domain.AutomationExecutionStatus `json:"status"`
 	Error      string                           `json:"error,omitempty"`
 	Actions    []AutomationActionExecutionDTO   `json:"actions"`
-	StartedAt  timex.Time                       `json:"startedAt"`
-	FinishedAt timex.Time                       `json:"finishedAt"`
-	CreatedAt  timex.Time                       `json:"createdAt"`
-	UpdatedAt  timex.Time                       `json:"updatedAt"`
+	StartedAt  string                           `json:"startedAt"`
+	FinishedAt string                           `json:"finishedAt"`
+	CreatedAt  string                           `json:"createdAt"`
+	UpdatedAt  string                           `json:"updatedAt"`
 }

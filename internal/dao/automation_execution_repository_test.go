@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -67,7 +68,41 @@ func TestAutomationExecutionRepositoryIsIdempotentAndQueryable(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, domain.AutomationExecutionSucceeded, rows[0].Status)
 	require.Equal(t, domain.AutomationExecutionSucceeded, rows[0].Actions[0].Status)
-	require.Equal(t, "event-1", rows[0].Event.ID)
+	require.Empty(t, rows[0].Event.ID, "list responses must not load full note payloads")
+	loaded, err := repo.GetByID(context.Background(), 42, current.ID)
+	require.NoError(t, err)
+	require.Equal(t, "event-1", loaded.Event.ID)
+	for i := 0; i < 101; i++ {
+		busy := *first
+		busy.TriggerID = 9
+		busy.EventID = fmt.Sprintf("busy-%d", i)
+		_, _, err := repo.Start(context.Background(), &busy)
+		require.NoError(t, err)
+	}
+	latest, err := repo.LatestByTrigger(context.Background(), 42)
+	require.NoError(t, err)
+	require.Len(t, latest, 3, "a busy trigger must not hide older results of other triggers")
+	byTrigger := make(map[int64]*domain.AutomationExecution)
+	for _, item := range latest {
+		byTrigger[item.TriggerID] = item
+	}
+	require.Equal(t, current.ID, byTrigger[7].ID)
+	require.Empty(t, byTrigger[7].Event.ID)
+
+	rules := NewAutomationRepository(d)
+	rule, err := rules.Save(context.Background(), &domain.AutomationTrigger{UID: 42, VaultID: 3, Name: "rule"}, 42)
+	require.NoError(t, err)
+	now := time.Now().Truncate(time.Second)
+	require.NoError(t, rules.MarkRun(context.Background(), rule.ID, 42, now))
+	// Save still holds the old zero-valued cursor snapshot.
+	_, err = rules.Save(context.Background(), rule, 42)
+	require.NoError(t, err)
+	require.NoError(t, rules.MarkAttempt(context.Background(), rule.ID, 42, now.Add(-time.Hour)))
+	require.NoError(t, rules.MarkRun(context.Background(), rule.ID, 42, now.Add(-time.Hour)))
+	saved, err := rules.GetByID(context.Background(), rule.ID, 42)
+	require.NoError(t, err)
+	require.True(t, saved.LastRunAt.Equal(now))
+	require.True(t, saved.LastAttemptAt.Equal(now))
 }
 
 func TestAutomationExecutionRepositoryClaimRetryIsAtomic(t *testing.T) {
@@ -128,6 +163,20 @@ func TestAutomationExecutionRepositoryClaimRetryIsAtomic(t *testing.T) {
 	latest, err := repo.GetByID(context.Background(), 42, current.ID)
 	require.NoError(t, err)
 	require.Equal(t, domain.AutomationExecutionRunning, latest.Status)
+	// A delayed request read the same failure as the first retry, but arrives
+	// after that retry has failed again. Status alone cannot distinguish them.
+	latest.Status = domain.AutomationExecutionFailed
+	require.NoError(t, repo.Update(context.Background(), latest))
+	stale := *current
+	stale.Status = domain.AutomationExecutionRunning
+	claimed, err := repo.ClaimRetry(context.Background(), &stale)
+	require.NoError(t, err)
+	require.False(t, claimed, "stale snapshots must not reset newer action progress")
+	require.Error(t, repo.Update(context.Background(), &stale))
+	latest.Status = domain.AutomationExecutionRunning
+	claimed, err = repo.ClaimRetry(context.Background(), latest)
+	require.NoError(t, err)
+	require.True(t, claimed)
 }
 
 func TestAutomationExecutionRepositoryCleanupExpiresAndBoundsHistory(t *testing.T) {

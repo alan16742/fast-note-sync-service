@@ -66,7 +66,7 @@ func automationExecutionToDomain(item *model.AutomationExecution) (*domain.Autom
 		}
 	}
 	return &domain.AutomationExecution{
-		ID: item.ID, UID: item.UID, TriggerID: item.TriggerID, VaultID: item.VaultID,
+		ID: item.ID, Revision: item.Revision, UID: item.UID, TriggerID: item.TriggerID, VaultID: item.VaultID,
 		EventID: item.EventID, EventType: domain.AutomationEventType(item.EventType),
 		Event:  event,
 		Status: domain.AutomationExecutionStatus(item.Status), Error: item.Error, Actions: actions,
@@ -92,7 +92,7 @@ func automationExecutionToModel(item *domain.AutomationExecution) (*model.Automa
 		eventData = string(event)
 	}
 	return &model.AutomationExecution{
-		ID: item.ID, UID: item.UID, TriggerID: item.TriggerID, VaultID: item.VaultID,
+		ID: item.ID, Revision: item.Revision, UID: item.UID, TriggerID: item.TriggerID, VaultID: item.VaultID,
 		EventID: item.EventID, EventType: string(item.EventType), Status: string(item.Status),
 		Event: eventData, Error: item.Error, Actions: string(actions), StartedAt: timex.Time(item.StartedAt),
 		FinishedAt: timex.Time(item.FinishedAt), CreatedAt: timex.Time(item.CreatedAt),
@@ -132,7 +132,7 @@ func (r *automationExecutionRepository) Start(ctx context.Context, execution *do
 		if err != nil {
 			return err
 		}
-		now := timex.Now()
+		now := timex.Time(time.Now().UTC())
 		if item.StartedAt.IsZero() {
 			item.StartedAt = now
 		}
@@ -173,19 +173,20 @@ func (r *automationExecutionRepository) ClaimRetry(ctx context.Context, executio
 	if err != nil {
 		return false, err
 	}
-	now := timex.Now()
+	now := timex.Time(time.Now().UTC())
 	if item.StartedAt.IsZero() {
 		item.StartedAt = now
 		execution.StartedAt = time.Time(now)
 	}
-	execution.UpdatedAt = time.Time(now)
+	item.UpdatedAt = now
 	claimed := false
 	err = r.dao.ExecuteWrite(ctx, execution.UID, r, func(db *gorm.DB) error {
 		result := db.Model(&model.AutomationExecution{}).
-			Where("id = ? AND uid = ? AND status IN ?", execution.ID, execution.UID, []string{
+			Where("id = ? AND uid = ? AND revision = ? AND status IN ?", execution.ID, execution.UID, execution.Revision, []string{
 				string(domain.AutomationExecutionFailed), string(domain.AutomationExecutionCancelled),
 			}).
 			Updates(map[string]any{
+				"revision":    gorm.Expr("revision + 1"),
 				"status":      string(domain.AutomationExecutionRunning),
 				"error":       "",
 				"actions":     item.Actions,
@@ -196,6 +197,10 @@ func (r *automationExecutionRepository) ClaimRetry(ctx context.Context, executio
 		claimed = result.RowsAffected == 1
 		return result.Error
 	})
+	if err == nil && claimed {
+		execution.Revision++
+		execution.UpdatedAt = time.Time(now)
+	}
 	return claimed, err
 }
 
@@ -210,15 +215,51 @@ func (r *automationExecutionRepository) Update(ctx context.Context, execution *d
 	if err != nil {
 		return err
 	}
-	item.UpdatedAt = timex.Now()
-	return r.dao.ExecuteWrite(ctx, execution.UID, r, func(db *gorm.DB) error {
-		return db.Model(&model.AutomationExecution{}).
-			Where("id = ? AND uid = ?", execution.ID, execution.UID).
+	item.UpdatedAt = timex.Time(time.Now().UTC())
+	err = r.dao.ExecuteWrite(ctx, execution.UID, r, func(db *gorm.DB) error {
+		result := db.Model(&model.AutomationExecution{}).
+			Where("id = ? AND uid = ? AND revision = ?", execution.ID, execution.UID, execution.Revision).
 			Updates(map[string]any{
-				"status": item.Status, "error": item.Error, "actions": item.Actions, "event": item.Event,
+				"revision": gorm.Expr("revision + 1"),
+				"status":   item.Status, "error": item.Error, "actions": item.Actions, "event": item.Event,
 				"started_at": item.StartedAt, "finished_at": item.FinishedAt, "updated_at": item.UpdatedAt,
-			}).Error
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("automation execution %d changed or was removed", execution.ID)
+		}
+		return nil
 	})
+	if err == nil {
+		execution.Revision++
+		execution.UpdatedAt = time.Time(item.UpdatedAt)
+	}
+	return err
+}
+
+// LatestByTrigger is independent of the global history page. A busy rule must
+// not hide the last result of a less frequently executed rule.
+func (r *automationExecutionRepository) LatestByTrigger(ctx context.Context, uid int64) ([]*domain.AutomationExecution, error) {
+	db, err := r.db(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	latest := db.Model(&model.AutomationExecution{}).Select("MAX(id)").Where("uid = ?", uid).Group("trigger_id")
+	var items []*model.AutomationExecution
+	if err := db.Omit("event").Where("uid = ? AND id IN (?)", uid, latest).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	result := make([]*domain.AutomationExecution, 0, len(items))
+	for _, item := range items {
+		execution, err := automationExecutionToDomain(item)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, execution)
+	}
+	return result, nil
 }
 
 func (r *automationExecutionRepository) List(ctx context.Context, uid, triggerID int64, page, pageSize int) ([]*domain.AutomationExecution, int64, error) {
@@ -241,7 +282,7 @@ func (r *automationExecutionRepository) List(ctx context.Context, uid, triggerID
 		pageSize = 20
 	}
 	var items []*model.AutomationExecution
-	if err := query.Order("id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
+	if err := query.Omit("event").Order("id desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
 		return nil, 0, err
 	}
 	result := make([]*domain.AutomationExecution, 0, len(items))
@@ -314,7 +355,7 @@ func (r *automationExecutionRepository) cleanupUser(ctx context.Context, uid int
 			if end > len(terminalIDs) {
 				end = len(terminalIDs)
 			}
-			result = db.Where("uid = ? AND id IN ?", uid, terminalIDs[start:end]).Delete(&model.AutomationExecution{})
+			result = db.Where("uid = ? AND id IN ? AND status IN ?", uid, terminalIDs[start:end], automationExecutionTerminalStatuses).Delete(&model.AutomationExecution{})
 			if result.Error != nil {
 				return result.Error
 			}

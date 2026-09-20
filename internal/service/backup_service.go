@@ -57,7 +57,7 @@ type backupService struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	runningTasks   map[string]backupRunningTask // key: target/trigger/vault execution context
+	runningTasks   map[string]backupRunningTask // key: user/target/trigger/vault execution context
 	nextTaskID     uint64
 	runningMu      sync.Mutex
 }
@@ -65,6 +65,7 @@ type backupService struct {
 type backupRunningTask struct {
 	cancel context.CancelFunc
 	id     uint64
+	done   <-chan struct{}
 }
 
 // NewBackupService creates BackupService instance
@@ -252,11 +253,14 @@ func (s *backupService) UpdateConfig(ctx context.Context, uid int64, req *dto.Ba
 	}
 	// Validate Storage IDs
 	var storageIds []int64
-	if err := json.Unmarshal([]byte(req.StorageIds), &storageIds); err != nil {
+	if err := json.Unmarshal([]byte(req.StorageIds), &storageIds); err != nil || len(storageIds) == 0 {
 		return nil, code.ErrorBackupStorageIDInvalid
 	}
 	for _, sid := range storageIds {
-		if _, err := s.storageService.Get(ctx, uid, sid); err != nil {
+		if sid <= 0 {
+			return nil, code.ErrorBackupStorageIDInvalid
+		}
+		if target, err := s.storageService.Get(ctx, uid, sid); err != nil || target == nil {
 			return nil, code.ErrorStorageNotFound
 		}
 	}
@@ -273,8 +277,10 @@ func (s *backupService) UpdateConfig(ctx context.Context, uid int64, req *dto.Ba
 	}
 	passwordMode := req.PasswordMode
 	passwordValue := req.PasswordValue
-	if backupType == "sync" || passwordMode != 1 {
+	if backupType == "sync" {
 		passwordMode = 0
+	}
+	if passwordMode != 1 {
 		passwordValue = ""
 	}
 	// A RetentionDays of 0 means "no explicit value provided"; fall back to the
@@ -455,6 +461,9 @@ func (s *backupService) loadBackupStorageTargets(ctx context.Context, config *do
 		if err != nil || storageConfig == nil {
 			return nil, fmt.Errorf("storage %d: %w", storageID, code.ErrorStorageNotFound)
 		}
+		if !storageConfig.IsEnabled {
+			continue
+		}
 		target := backupStorageTarget{
 			storage: storageConfig, backupType: strings.ToLower(strings.TrimSpace(config.Type)),
 			includeVaultName: config.IncludeVaultName, passwordMode: config.PasswordMode,
@@ -468,6 +477,9 @@ func (s *backupService) loadBackupStorageTargets(ctx context.Context, config *do
 		}
 		result = append(result, target)
 	}
+	if len(result) == 0 {
+		return nil, errors.New("backup requires at least one enabled storage target")
+	}
 	return result, nil
 }
 
@@ -476,7 +488,7 @@ func (s *backupService) loadBackupStorageTargets(ctx context.Context, config *do
 func (s *backupService) handleBackupSync(ctx context.Context, config *domain.BackupConfig, execution *domain.AutomationExecutionContext, isPending bool) error {
 	uid := config.UID
 	configID := config.ID
-	executionKey := fmt.Sprintf("%d:%d:%d", configID, execution.TriggerID, execution.VaultID)
+	executionKey := fmt.Sprintf("%d:%d:%d:%d", uid, configID, execution.TriggerID, execution.VaultID)
 	targets, err := s.loadBackupStorageTargets(ctx, config)
 	if err != nil {
 		return err
@@ -494,19 +506,25 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	// 1. Concurrency conflict handling strategy
 	// 1. 并发冲突处理策略
 	s.runningMu.Lock()
+	if s.ctx != nil && s.ctx.Err() != nil {
+		s.runningMu.Unlock()
+		return s.ctx.Err()
+	}
+	var previousDone <-chan struct{}
 	if oldTask, running := s.runningTasks[executionKey]; running {
 		if hasSync {
 			// Sync task strategy: cancel old task, execute new one
 			// 同步任务策略：取消旧任务，执行新任务
 			s.logger.Info("Cancelling existing sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configID", configID))
 			oldTask.cancel()
+			previousDone = oldTask.done
 			delete(s.runningTasks, executionKey)
 		} else {
 			// Full/Incremental backup strategy: keep old task, ignore new one
 			// 全量/增量备份策略：保留旧任务，忽略新任务
 			s.runningMu.Unlock()
 			s.logger.Info("Backup task already running, skipping this trigger", zap.Int64("uid", uid), zap.Int64("configID", configID), zap.String("type", config.Type))
-			return nil
+			return errors.New("backup task is already running")
 		}
 	}
 
@@ -515,7 +533,9 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	s.nextTaskID++
 	taskID := s.nextTaskID
-	s.runningTasks[executionKey] = backupRunningTask{cancel: taskCancel, id: taskID}
+	taskDone := make(chan struct{})
+	s.runningTasks[executionKey] = backupRunningTask{cancel: taskCancel, id: taskID, done: taskDone}
+	s.wg.Add(1)
 	s.runningMu.Unlock()
 
 	// Cleanup on task finish
@@ -529,10 +549,13 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 		}
 		s.runningMu.Unlock()
 		taskCancel() // Release resources // 释放资源
+		close(taskDone)
+		s.wg.Done()
 	}()
 
-	s.wg.Add(1)
-	defer s.wg.Done()
+	if previousDone != nil {
+		<-previousDone
+	}
 
 	// Check if context is already done
 	select {
@@ -542,10 +565,7 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	}
 
 	startTime := time.Now()
-	prevRunTime := s.previousBackupRun(ctx, uid, config.ID, execution)
-	if prevRunTime.IsZero() {
-		prevRunTime = config.LastRunTime
-	}
+	prevRunTime := s.previousBackupRun(ctx, config, execution)
 
 	shouldRun := hasFull || isPending || prevRunTime.IsZero()
 
@@ -598,21 +618,39 @@ func (s *backupService) handleBackupSync(ctx context.Context, config *domain.Bac
 	return s.finishTask(taskCtx, config, execution, backupErr, fileCount, fileSize, startTime)
 }
 
-func (s *backupService) previousBackupRun(ctx context.Context, uid, configID int64, execution *domain.AutomationExecutionContext) time.Time {
+func (s *backupService) previousBackupRun(ctx context.Context, config *domain.BackupConfig, execution *domain.AutomationExecutionContext) time.Time {
 	if execution == nil {
 		return time.Time{}
 	}
-	histories, _, err := s.backupRepo.ListHistory(ctx, uid, configID, 1, 1000)
+	var storageIDs []int64
+	if err := json.Unmarshal([]byte(config.StorageIds), &storageIDs); err != nil || len(storageIDs) == 0 {
+		return time.Time{}
+	}
+	histories, _, err := s.backupRepo.ListHistory(ctx, config.UID, config.ID, 1, 1000)
 	if err != nil {
 		return time.Time{}
 	}
-	var latest time.Time
+	// Each destination must have a successful baseline in this rule/vault scope.
+	// A failed upload or a newly added storage must never advance its cursor.
+	latestByStorage := make(map[int64]time.Time)
 	for _, history := range histories {
-		if history.TriggerID == execution.TriggerID && history.VaultID == execution.VaultID && history.StartTime.After(latest) {
-			latest = history.StartTime
+		if history.TriggerID == execution.TriggerID && history.VaultID == execution.VaultID &&
+			(history.Status == domain.BackupStatusSuccess || history.Status == domain.BackupStatusNoUpdate) &&
+			history.StartTime.After(latestByStorage[history.StorageID]) {
+			latestByStorage[history.StorageID] = history.StartTime
 		}
 	}
-	return latest
+	var baseline time.Time
+	for _, storageID := range storageIDs {
+		latest := latestByStorage[storageID]
+		if latest.IsZero() {
+			return time.Time{}
+		}
+		if baseline.IsZero() || latest.Before(baseline) {
+			baseline = latest
+		}
+	}
+	return baseline
 }
 
 // getVaultName Get vault name by ID
@@ -691,8 +729,8 @@ func (s *backupService) runArchive(ctx context.Context, config *domain.BackupCon
 		case 2:
 			password = util.GetRandomString(12)
 		}
-		zipName := fmt.Sprintf("backup_%s_%d_%s_%s.zip", group.policy.backupType, config.UID, vaultName, startTime.Format("20060102_150405"))
-		zipPath := filepath.Join(s.backupStagingDir(), zipName)
+		zipName := fmt.Sprintf("backup_%s_%d_%s_%d_%d_%s.zip", group.policy.backupType, config.UID, vaultName, config.ID, execution.TriggerID, startTime.Format("20060102_150405.000000000"))
+		zipPath := filepath.Join(tempDir, zipName)
 		if err := os.MkdirAll(s.backupStagingDir(), 0o755); err != nil {
 			return totalCount, totalSize, err
 		}
@@ -716,76 +754,6 @@ func (s *backupService) runArchive(ctx context.Context, config *domain.BackupCon
 		return totalCount, totalSize, errNoUpdates
 	}
 	return totalCount, totalSize, nil
-}
-
-// runArchiveLegacy is retained only as a reference while old history is
-// naturally replaced by the storage-policy implementation above.
-func (s *backupService) runArchiveLegacy(ctx context.Context, config *domain.BackupConfig, execution *domain.AutomationExecutionContext, tempDir string, startTime time.Time, lastRun time.Time) (int64, int64, error) {
-	uid := config.UID
-	vaultName := s.getVaultName(ctx, execution.VaultID, uid)
-	zipName := fmt.Sprintf("backup_%s_%d_%s_%s.zip", config.Type, uid, vaultName, startTime.Format("20060102_150405"))
-	if err := os.MkdirAll(s.backupStagingDir(), 0o755); err != nil {
-		return 0, 0, err
-	}
-	zipPath := filepath.Join(s.backupStagingDir(), zipName)
-
-	defer os.Remove(zipPath)
-
-	// 1. Collect resources (includes notes and attachments)
-	// 1. 收集资源 (包含笔记和附件)
-	count, size, err := s.exportArchiveFiles(ctx, uid, execution.VaultID, tempDir, config.Type == "incremental", lastRun)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	if count == 0 {
-		s.recordNoUpdateHistory(ctx, config, execution, startTime)
-		return 0, 0, errNoUpdates
-	}
-
-	// 2. Zip archive
-	// 2. 压缩打包
-	password := ""
-	switch config.PasswordMode {
-	case 1: // Fixed
-		password = config.PasswordValue
-	case 2: // Random
-		password = util.GetRandomString(12)
-	}
-
-	if err := util.ZipWithPassword(tempDir, zipPath, password); err != nil {
-		return 0, 0, err
-	}
-
-	// 3. Upload to all storage targets
-	// 3. 上传到所有存储目标
-	var storageIds []int64
-	if err := json.Unmarshal([]byte(config.StorageIds), &storageIds); err != nil {
-		return count, size, code.ErrorBackupStorageIDInvalid
-	}
-
-	var archiveErrors []string
-	for _, sid := range storageIds {
-		st, err := s.storageService.Get(ctx, uid, sid)
-		if err != nil {
-			s.logger.Warn("Failed to get storage config, skipping", zap.Int64("sid", sid), zap.Error(err))
-			archiveErrors = append(archiveErrors, fmt.Sprintf("storage %d: config error: %v", sid, err))
-			continue
-		}
-		if !st.IsEnabled {
-			s.logger.Info("Storage is disabled, skipping", zap.Int64("sid", sid))
-			continue
-		}
-		if err := s.uploadArchive(ctx, uid, config.ID, execution, st, zipPath, zipName, config.Type, password, startTime, count, size); err != nil {
-			s.logger.Warn("Archive upload to storage failed", zap.Int64("sid", sid), zap.String("type", st.Type), zap.Error(err))
-			archiveErrors = append(archiveErrors, fmt.Sprintf("storage %d (%s): %v", sid, st.Type, err))
-		}
-	}
-
-	if len(archiveErrors) > 0 {
-		return count, size, fmt.Errorf("archive errors: %s", strings.Join(archiveErrors, "; "))
-	}
-	return count, size, nil
 }
 
 // runSync Execute real-time file sync
@@ -1286,6 +1254,9 @@ func (s *backupService) Shutdown(ctx context.Context) error {
 	// 1. Signal all background tasks to stop
 	// 1. 通知所有后台任务停止
 	s.cancel()
+	// Synchronize with task registration before waiting on the task group.
+	s.runningMu.Lock()
+	s.runningMu.Unlock()
 
 	// Wait for active backup/sync tasks to finish or abort
 	// 2. 等待活跃的备份/同步任务完成或中止

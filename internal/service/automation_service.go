@@ -15,7 +15,6 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
-	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/workerpool"
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -149,8 +148,20 @@ func (s *automationService) List(ctx context.Context, uid int64) ([]*dto.Automat
 		return nil, err
 	}
 	result := make([]*dto.AutomationTriggerDTO, 0, len(triggers))
+	latest := make(map[int64]*dto.AutomationExecutionDTO)
+	if s.executionRepo != nil {
+		executions, err := s.executionRepo.LatestByTrigger(ctx, uid)
+		if err != nil {
+			return nil, err
+		}
+		for _, execution := range executions {
+			latest[execution.TriggerID] = automationExecutionToDTO(execution)
+		}
+	}
 	for _, trigger := range triggers {
-		result = append(result, automationToDTO(trigger))
+		item := automationToDTO(trigger)
+		item.LatestExecution = latest[trigger.ID]
+		result = append(result, item)
 	}
 	return result, nil
 }
@@ -334,6 +345,11 @@ func (s *automationService) Delete(ctx context.Context, uid, id int64) error {
 // separate from Save so a UI/API caller can run the same configured rule
 // without knowing anything about its target credentials.
 func (s *automationService) Trigger(ctx context.Context, uid int64, request *dto.AutomationRunRequest) error {
+	ctx, done, err := s.beginAutomationRequest(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if request == nil || request.ID <= 0 {
 		return errors.New("automation trigger id is required")
 	}
@@ -511,16 +527,7 @@ func (s *automationService) dispatchTriggerSelected(ctx context.Context, trigger
 		submit := func(taskCtx context.Context) error {
 			return s.executeAction(taskCtx, trigger.ID, event, action)
 		}
-		var actionErr error
-		if s.pool == nil {
-			actionErr = submit(ctx)
-		} else {
-			// Publish already runs outside the write request. Waiting here is
-			// intentional: a successful dispatch means every target action finished
-			// successfully, so cron can safely advance LastRunAt and manual callers
-			// receive the actual action error.
-			actionErr = s.pool.Submit(ctx, submit)
-		}
+		actionErr := s.runAutomationAction(ctx, submit)
 		if actionErr != nil {
 			if firstErr == nil {
 				firstErr = actionErr
@@ -561,11 +568,9 @@ func (s *automationService) executeTrigger(ctx context.Context, trigger *domain.
 
 	created, current, err := s.executionRepo.Start(ctx, execution)
 	if err != nil {
-		// Execution history must not make a note/file write fail. The action is
-		// still attempted, but the failure is visible in the service log.
-		s.logger.Warn("start automation execution record failed",
-			zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
-		return s.dispatchTrigger(ctx, trigger, event)
+		// Publish already runs independently of the note/file write. Dispatching
+		// without this claim would bypass the persisted idempotency guard.
+		return fmt.Errorf("start automation execution record: %w", err)
 	}
 	if current != nil {
 		execution = current
@@ -589,6 +594,7 @@ func (s *automationService) executeTrigger(ctx context.Context, trigger *domain.
 
 	err = s.dispatchTriggerObserved(ctx, trigger, event, observe)
 	execution.Status = domain.AutomationExecutionSucceeded
+	execution.Event = domain.AutomationEvent{}
 	if err != nil {
 		execution.Status = automationExecutionStatusForError(err)
 		execution.Error = err.Error()
@@ -600,6 +606,7 @@ func (s *automationService) executeTrigger(ctx context.Context, trigger *domain.
 	if updateErr := s.updateAutomationExecution(ctx, execution); updateErr != nil {
 		s.logger.Warn("finish automation execution record failed",
 			zap.Int64("executionID", execution.ID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(updateErr))
+		err = errors.Join(err, updateErr)
 	}
 	return err
 }
@@ -650,6 +657,11 @@ func (s *automationService) automationActionObserver(ctx context.Context, execut
 }
 
 func (s *automationService) RetryExecution(ctx context.Context, uid, executionID int64) error {
+	ctx, done, err := s.beginAutomationRequest(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if s.executionRepo == nil {
 		return errors.New("automation execution history is unavailable")
 	}
@@ -678,6 +690,9 @@ func (s *automationService) RetryExecution(ctx context.Context, uid, executionID
 	}
 	if !trigger.Enabled {
 		return errors.New("automation trigger is disabled")
+	}
+	if trigger.VaultID != execution.VaultID {
+		return errors.New("automation trigger vault changed; run the trigger again")
 	}
 	if len(trigger.Actions) != len(execution.Actions) {
 		return errors.New("automation trigger actions changed; run the trigger again")
@@ -725,13 +740,16 @@ func (s *automationService) RetryExecution(ctx context.Context, uid, executionID
 	if err != nil {
 		execution.Status = automationExecutionStatusForError(err)
 		execution.Error = err.Error()
+	} else {
+		execution.Event = domain.AutomationEvent{}
 	}
 	execution.FinishedAt = time.Now().UTC()
 	if updateErr := s.updateAutomationExecution(ctx, execution); updateErr != nil {
 		s.logger.Warn("finish retried automation execution record failed", zap.Int64("executionID", execution.ID), zap.Error(updateErr))
+		err = errors.Join(err, updateErr)
 	}
 	if execution.EventType == domain.AutomationEventCron {
-		cursorAt := time.Now()
+		cursorAt := event.OccurredAt
 		var cursorErr error
 		if err == nil {
 			cursorErr = s.repo.MarkRun(ctx, trigger.ID, uid, cursorAt)
@@ -834,46 +852,9 @@ func (s *automationService) pollTimeTriggers() {
 		if last.IsZero() {
 			last = localNow.Add(-time.Minute)
 		}
-		due := false
-		cronRuleCount := 0
-		cronMatches := 0
-		var matchedOccurrences []time.Time
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		for _, eventRule := range trigger.Events {
-			if eventRule.Type != domain.AutomationEventCron {
-				continue
-			}
-			cronRuleCount++
-			schedule, parseErr := parser.Parse(eventRule.Schedule)
-			if parseErr != nil {
-				s.logger.Warn("invalid automation schedule", zap.Int64("triggerID", trigger.ID), zap.Error(parseErr))
-				continue
-			}
-			next := schedule.Next(last)
-			if !next.After(localNow) {
-				cronMatches++
-				matchedOccurrences = append(matchedOccurrences, next)
-			}
-		}
-		if trigger.MatchMode == domain.AutomationMatchAll {
-			due = cronRuleCount > 0 && cronMatches == cronRuleCount
-		} else {
-			due = cronMatches > 0
-		}
+		occurrence, due := nextAutomationCronOccurrence(trigger, last, localNow)
 		if !due {
 			continue
-		}
-		occurrence := localNow.Truncate(time.Minute)
-		if len(matchedOccurrences) > 0 {
-			occurrence = matchedOccurrences[0]
-			for _, candidate := range matchedOccurrences[1:] {
-				if trigger.MatchMode == domain.AutomationMatchAll && candidate.After(occurrence) {
-					occurrence = candidate
-				}
-				if trigger.MatchMode != domain.AutomationMatchAll && candidate.Before(occurrence) {
-					occurrence = candidate
-				}
-			}
 		}
 		event := &domain.AutomationEvent{
 			ID: automationCronEventID(trigger.ID, occurrence), OccurredAt: occurrence.UTC(), UID: trigger.UID,
@@ -1254,6 +1235,13 @@ func automationToDTO(trigger *domain.AutomationTrigger) *dto.AutomationTriggerDT
 	return result
 }
 
+func automationExecutionTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
 func automationExecutionToDTO(execution *domain.AutomationExecution) *dto.AutomationExecutionDTO {
 	if execution == nil {
 		return nil
@@ -1262,14 +1250,14 @@ func automationExecutionToDTO(execution *domain.AutomationExecution) *dto.Automa
 	for _, action := range execution.Actions {
 		actions = append(actions, dto.AutomationActionExecutionDTO{
 			Type: action.Type, ConfigID: action.ConfigID, Status: string(action.Status), Error: action.Error,
-			StartedAt: timex.Time(action.StartedAt), FinishedAt: timex.Time(action.FinishedAt),
+			StartedAt: automationExecutionTime(action.StartedAt), FinishedAt: automationExecutionTime(action.FinishedAt),
 		})
 	}
 	return &dto.AutomationExecutionDTO{
 		ID: execution.ID, UID: execution.UID, TriggerID: execution.TriggerID, VaultID: execution.VaultID,
 		EventID: execution.EventID, EventType: execution.EventType, Status: execution.Status, Error: execution.Error,
-		Actions: actions, StartedAt: timex.Time(execution.StartedAt), FinishedAt: timex.Time(execution.FinishedAt),
-		CreatedAt: timex.Time(execution.CreatedAt), UpdatedAt: timex.Time(execution.UpdatedAt),
+		Actions: actions, StartedAt: automationExecutionTime(execution.StartedAt), FinishedAt: automationExecutionTime(execution.FinishedAt),
+		CreatedAt: automationExecutionTime(execution.CreatedAt), UpdatedAt: automationExecutionTime(execution.UpdatedAt),
 	}
 }
 

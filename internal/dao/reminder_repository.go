@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync"
 
@@ -60,7 +61,7 @@ func (r *reminderRepository) SyncNote(ctx context.Context, uid, triggerID, noteI
 				}
 				// Reopened tasks start from their new effective time. Live tasks
 				// retain delivery progress across repeated scans and restarts.
-				if err := tx.Model(&model.ReminderJob{}).Where("uid = ? AND trigger_id = ? AND note_id = ? AND task_key = ? AND active = ?", uid, triggerID, noteID, item.TaskKey, false).Updates(map[string]any{"active": true, "schedule": item.Schedule, "next_at": item.NextAt, "occurrence_at": item.OccurrenceAt, "retry_at": 0, "attempts": 0, "lease_until": 0, "claim_token": ""}).Error; err != nil {
+				if err := tx.Model(&model.ReminderJob{}).Where("uid = ? AND trigger_id = ? AND note_id = ? AND task_key = ? AND active = ?", uid, triggerID, noteID, item.TaskKey, false).Updates(map[string]any{"active": true, "schedule": item.Schedule, "next_at": item.NextAt, "occurrence_at": item.OccurrenceAt, "retry_at": 0, "attempts": 0, "lease_until": 0, "claim_token": "", "delivered_targets": "[]"}).Error; err != nil {
 					return err
 				}
 			}
@@ -84,26 +85,71 @@ func (r *reminderRepository) ListDue(ctx context.Context, uid, triggerID, now in
 	}
 	out := make([]domain.ReminderJob, 0, len(rows))
 	for _, row := range rows {
-		job := domain.ReminderJob{ID: row.ID, UID: uid, TriggerID: triggerID, NoteID: row.NoteID, NextAt: row.NextAt, OccurrenceAt: row.OccurrenceAt, Attempts: row.Attempts}
-		if err := json.Unmarshal([]byte(row.Schedule), &job.Task); err != nil {
+		job, err := reminderJobToDomain(row)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, job)
+		out = append(out, *job)
 	}
 	return out, nil
 }
 
-func (r *reminderRepository) Claim(ctx context.Context, uid, id, now int64, token string) (bool, error) {
-	if _, err := r.db(ctx, uid); err != nil {
-		return false, err
+func reminderJobToDomain(row model.ReminderJob) (*domain.ReminderJob, error) {
+	job := &domain.ReminderJob{ID: row.ID, UID: row.UID, TriggerID: row.TriggerID, NoteID: row.NoteID, NextAt: row.NextAt, OccurrenceAt: row.OccurrenceAt, Attempts: row.Attempts}
+	if err := json.Unmarshal([]byte(row.Schedule), &job.Task); err != nil {
+		return nil, err
 	}
-	claimed := false
+	if row.DeliveredTargets != "" {
+		if err := json.Unmarshal([]byte(row.DeliveredTargets), &job.DeliveredTargets); err != nil {
+			return nil, err
+		}
+	}
+	return job, nil
+}
+
+func (r *reminderRepository) Claim(ctx context.Context, uid, id, now int64, token string) (*domain.ReminderJob, error) {
+	if _, err := r.db(ctx, uid); err != nil {
+		return nil, err
+	}
+	var claimed *domain.ReminderJob
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		result := db.Model(&model.ReminderJob{}).Where("uid = ? AND id = ? AND active = ? AND next_at > 0 AND next_at <= ? AND retry_at <= ? AND lease_until <= ?", uid, id, true, now, now, now).Updates(map[string]any{"claim_token": token, "lease_until": now + 60})
-		claimed = result.RowsAffected == 1
-		return result.Error
+		return db.Transaction(func(tx *gorm.DB) error {
+			result := tx.Model(&model.ReminderJob{}).Where("uid = ? AND id = ? AND active = ? AND next_at > 0 AND next_at <= ? AND retry_at <= ? AND lease_until <= ?", uid, id, true, now, now, now).Updates(map[string]any{"claim_token": token, "lease_until": now + 60})
+			if result.Error != nil || result.RowsAffected != 1 {
+				return result.Error
+			}
+			var row model.ReminderJob
+			if err := tx.Where("uid = ? AND id = ?", uid, id).First(&row).Error; err != nil {
+				return err
+			}
+			var err error
+			claimed, err = reminderJobToDomain(row)
+			return err
+		})
 	})
 	return claimed, err
+}
+
+func (r *reminderRepository) Checkpoint(ctx context.Context, uid, id, now int64, token string, delivered []int64) error {
+	if _, err := r.db(ctx, uid); err != nil {
+		return err
+	}
+	data, err := json.Marshal(delivered)
+	if err != nil {
+		return err
+	}
+	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		result := db.Model(&model.ReminderJob{}).
+			Where("uid = ? AND id = ? AND active = ? AND claim_token = ? AND lease_until > ?", uid, id, true, token, now).
+			Updates(map[string]any{"delivered_targets": string(data), "lease_until": now + 60})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("reminder delivery lease was lost")
+		}
+		return nil
+	})
 }
 
 func (r *reminderRepository) update(ctx context.Context, uid, id int64, token string, values map[string]any) error {
@@ -117,7 +163,7 @@ func (r *reminderRepository) update(ctx context.Context, uid, id int64, token st
 	})
 }
 func (r *reminderRepository) Finish(ctx context.Context, uid, id int64, token string, nextAt, occurrenceAt int64) error {
-	return r.update(ctx, uid, id, token, map[string]any{"next_at": nextAt, "occurrence_at": occurrenceAt, "retry_at": 0, "attempts": 0})
+	return r.update(ctx, uid, id, token, map[string]any{"next_at": nextAt, "occurrence_at": occurrenceAt, "retry_at": 0, "attempts": 0, "delivered_targets": "[]"})
 }
 func (r *reminderRepository) Retry(ctx context.Context, uid, id int64, token string, retryAt int64) error {
 	return r.update(ctx, uid, id, token, map[string]any{"retry_at": retryAt, "attempts": gorm.Expr("attempts + 1")})

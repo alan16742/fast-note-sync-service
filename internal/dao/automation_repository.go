@@ -232,7 +232,10 @@ func (r *automationRepository) Save(ctx context.Context, trigger *domain.Automat
 				return err
 			}
 			item.CreatedAt = old.CreatedAt
-			if err := db.Save(item).Error; err != nil {
+			// Rule edits do not own scheduler cursors. Exclude them from the
+			// update so an in-flight execution cannot be rolled back by Save.
+			item.LastRunAt, item.LastAttemptAt = old.LastRunAt, old.LastAttemptAt
+			if err := db.Omit("last_run_at", "last_attempt_at").Save(item).Error; err != nil {
 				return err
 			}
 		} else {
@@ -262,7 +265,8 @@ func (r *automationRepository) MarkRun(ctx context.Context, id, uid int64, at ti
 	}
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ?", id, uid).Updates(map[string]any{
-			"last_run_at": at.Unix(), "last_attempt_at": at.Unix(),
+			"last_run_at":     gorm.Expr("CASE WHEN last_run_at < ? THEN ? ELSE last_run_at END", at.Unix(), at.Unix()),
+			"last_attempt_at": gorm.Expr("CASE WHEN last_attempt_at < ? THEN ? ELSE last_attempt_at END", at.Unix(), at.Unix()),
 		}).Error
 	})
 }
@@ -272,7 +276,7 @@ func (r *automationRepository) MarkAttempt(ctx context.Context, id, uid int64, a
 		return err
 	}
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ?", id, uid).Update("last_attempt_at", at.Unix()).Error
+		return db.Model(&model.AutomationTrigger{}).Where("id = ? AND uid = ? AND last_attempt_at < ?", id, uid, at.Unix()).Update("last_attempt_at", at.Unix()).Error
 	})
 }
 

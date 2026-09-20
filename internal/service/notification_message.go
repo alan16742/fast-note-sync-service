@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -51,16 +52,26 @@ func renderNotificationEndpoint(endpoint string, values map[string]string) strin
 	if err != nil || parsed.Host == "" {
 		return renderNotificationTemplate(endpoint, values)
 	}
-	parsed.Path = renderNotificationTemplate(parsed.Path, values)
-	parsed.Fragment = renderNotificationTemplate(parsed.Fragment, values)
-	query := parsed.Query()
-	for key, entries := range query {
-		for index, entry := range entries {
-			entries[index] = renderNotificationTemplate(entry, values)
-		}
-		query[key] = entries
+	if rendered := renderNotificationTemplate(parsed.Path, values); rendered != parsed.Path {
+		parsed.Path, parsed.RawPath = rendered, ""
 	}
-	parsed.RawQuery = query.Encode()
+	// Preserve literal query bytes and ordering (signed URLs may depend on
+	// them). Only encode values that actually contain a replaced placeholder.
+	parts := strings.Split(parsed.RawQuery, "&")
+	for index, part := range parts {
+		name, rawValue, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		value, err := url.QueryUnescape(rawValue)
+		if err != nil {
+			continue
+		}
+		if rendered := renderNotificationTemplate(value, values); rendered != value {
+			parts[index] = name + "=" + url.QueryEscape(rendered)
+		}
+	}
+	parsed.RawQuery = strings.Join(parts, "&")
 	return parsed.String()
 }
 
@@ -69,7 +80,7 @@ func notificationTemplates(subscription *domain.WebhookSubscription, reminder bo
 	if subscription != nil {
 		isCustom := strings.EqualFold(strings.TrimSpace(subscription.Provider), domain.WebhookProviderCustom)
 		if isCustom {
-			title = ""
+			return "", subscription.BodyTemplate
 		} else if subscription.TitleTemplate != "" {
 			title = subscription.TitleTemplate
 		}
@@ -80,15 +91,24 @@ func notificationTemplates(subscription *domain.WebhookSubscription, reminder bo
 	return title, body
 }
 
+func notificationBody(subscription *domain.WebhookSubscription, body string) string {
+	if subscription != nil && normalizeWebhookProvider(subscription.Provider) == domain.WebhookProviderCustom {
+		// A raw request may be JSON, XML or signed content. Never silently cut it.
+		return body
+	}
+	return limitNotificationBody(body)
+}
+
 func limitNotificationBody(body string) string {
 	if len(body) <= maxNotificationBodyBytes {
 		return body
 	}
-	end := maxNotificationBodyBytes
+	const suffix = "\n\n[content truncated]"
+	end := maxNotificationBodyBytes - len(suffix)
 	for end > 0 && !utf8.RuneStart(body[end]) {
 		end--
 	}
-	return body[:end] + "\n\n[content truncated]"
+	return body[:end] + suffix
 }
 
 func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*domain.WebhookSubscription) notification.Message {
@@ -122,7 +142,7 @@ func messageForNoteEvent(event *domain.ContentChangeEvent, subscriptions ...*dom
 	}
 	return notification.Message{
 		Title:    renderNotificationTemplate(titleTemplate, values),
-		Body:     limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Body:     notificationBody(subscription, renderNotificationTemplate(bodyTemplate, values)),
 		Endpoint: renderNotificationEndpoint(subscriptionURL(subscription), values),
 	}
 }
@@ -150,7 +170,7 @@ func messageForReminder(subscription *domain.WebhookSubscription, task, due, tim
 	}
 	return notification.Message{
 		Title:       renderNotificationTemplate(titleTemplate, values),
-		Body:        limitNotificationBody(renderNotificationTemplate(bodyTemplate, values)),
+		Body:        notificationBody(subscription, renderNotificationTemplate(bodyTemplate, values)),
 		Short:       "到期：" + due,
 		Tags:        "待办",
 		Group:       vault,
@@ -184,6 +204,9 @@ func sendNotification(ctx context.Context, sender notification.Sender, subscript
 		endpoint = message.Endpoint
 	}
 	if configured, ok := sender.(notification.ConfiguredSender); ok {
+		if normalizeWebhookMethod(subscription.Method) == "POST" && len(message.Body) > maxNotificationBodyBytes {
+			return errors.New("rendered webhook request body exceeds 8192 bytes")
+		}
 		return configured.SendWithOptions(ctx, endpoint, subscription.Method, subscription.Headers, message)
 	}
 	return sender.Send(ctx, endpoint, subscription.Secret, message)

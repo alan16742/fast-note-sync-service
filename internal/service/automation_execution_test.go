@@ -143,6 +143,11 @@ func (r *automationExecutionRepositoryStub) List(_ context.Context, uid, trigger
 	return result, int64(len(result)), nil
 }
 
+func (r *automationExecutionRepositoryStub) LatestByTrigger(ctx context.Context, uid int64) ([]*domain.AutomationExecution, error) {
+	rows, _, err := r.List(ctx, uid, 0, 1, 100)
+	return rows, err
+}
+
 func (r *automationExecutionRepositoryStub) Cleanup(context.Context, time.Time, int) (int64, error) {
 	return 0, nil
 }
@@ -278,6 +283,7 @@ func TestRetryExecutionOnlyRunsFailedActions(t *testing.T) {
 	require.Equal(t, domain.AutomationExecutionSucceeded, rows[0].Status)
 	require.Equal(t, domain.AutomationExecutionSucceeded, rows[0].Actions[0].Status)
 	require.Equal(t, domain.AutomationExecutionSucceeded, rows[0].Actions[1].Status)
+	require.Empty(t, rows[0].Event.ID, "successful retry must discard retained note content")
 }
 
 func TestConcurrentRetryExecutionClaimsAnExecutionOnlyOnce(t *testing.T) {

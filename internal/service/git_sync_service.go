@@ -60,7 +60,7 @@ type gitSyncService struct {
 	gitConf     *appconfig.GitConfig
 	logger      *zap.Logger
 	mu          sync.Mutex
-	running     map[string]gitRunningTask // target/trigger/vault execution context -> task
+	running     map[string]gitRunningTask // user/target/trigger/vault execution context -> task
 	nextTaskID  uint64
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -72,6 +72,7 @@ type gitSyncService struct {
 type gitRunningTask struct {
 	cancel context.CancelFunc
 	id     uint64
+	done   <-chan struct{}
 }
 
 // NewGitSyncService creates a GitSyncService instance
@@ -360,11 +361,17 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, e
 	}
 	// Strategy: For sync/mirror sync, directly cancel the old task and start a new one
 	// 策略：同步/镜像同步直接取消旧任务，启动新任务
-	key := fmt.Sprintf("%d:%d:%d", id, execution.TriggerID, execution.VaultID)
+	key := fmt.Sprintf("%d:%d:%d:%d", uid, id, execution.TriggerID, execution.VaultID)
 	s.mu.Lock()
+	if err := s.ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	var previousDone <-chan struct{}
 	if oldTask, running := s.running[key]; running {
 		s.logger.Info("Cancelling existing Git sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configId", id))
 		oldTask.cancel()
+		previousDone = oldTask.done
 		delete(s.running, key)
 	}
 
@@ -377,10 +384,11 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, e
 	stopCallerCancellation := context.AfterFunc(ctx, taskCancel)
 	s.nextTaskID++
 	taskID := s.nextTaskID
-	s.running[key] = gitRunningTask{cancel: taskCancel, id: taskID}
+	taskDone := make(chan struct{})
+	s.running[key] = gitRunningTask{cancel: taskCancel, id: taskID, done: taskDone}
+	s.wg.Add(1)
 	s.mu.Unlock()
 
-	s.wg.Add(1)
 	result := make(chan error, 1)
 	// Run in background, but keep the result connected to the caller. The
 	// automation dispatcher uses this result to decide whether a cron run may be
@@ -401,26 +409,33 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64, e
 			s.mu.Unlock()
 			taskCancel()
 			stopCallerCancellation()
+			close(taskDone)
 			s.wg.Done()
 			result <- runErr
 		}()
+		// Cancellation is cooperative. Wait for the previous run to finish
+		// using this workspace before starting its replacement.
+		if previousDone != nil {
+			<-previousDone
+		}
+		if runErr = taskCtx.Err(); runErr != nil {
+			return
+		}
 
 		// Use the newly created task context
 		// 使用新创建的任务 context
 		runConfig := *conf
 		runConfig.VaultID = execution.VaultID
-		if latest := s.previousSyncRun(ctx, conf.ID, execution); !latest.IsZero() {
+		runConfig.LastSyncTime = nil
+		if latest := s.previousSyncRun(taskCtx, conf.ID, execution); !latest.IsZero() {
 			runConfig.LastSyncTime = &latest
 		}
 		runErr = s.syncTask(taskCtx, &runConfig, execution)
 	})
 
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// taskCtx already follows caller cancellation. Wait for cleanup before
+	// reporting a retryable result, otherwise two runs can share a workspace.
+	return <-result
 }
 
 func (s *gitSyncService) previousSyncRun(ctx context.Context, configID int64, execution *domain.AutomationExecutionContext) time.Time {

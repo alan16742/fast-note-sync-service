@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -212,10 +213,13 @@ func (s *ReminderService) indexVault(ctx context.Context, uid int64, trigger *do
 
 func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, now time.Time) error {
 	token := uuid.NewString()
+	started := time.Now()
 	claimed, err := s.jobs.Claim(ctx, job.UID, job.ID, now.Unix(), token)
-	if err != nil || !claimed {
+	if err != nil || claimed == nil {
 		return err
 	}
+	// Use the state returned by the claim, not an earlier ListDue snapshot.
+	job = *claimed
 	cancel := func() error { return s.jobs.Cancel(ctx, job.UID, job.ID, token) }
 	trigger, err := s.triggers.GetByID(ctx, job.TriggerID, job.UID)
 	if err != nil {
@@ -260,11 +264,24 @@ func (s *ReminderService) deliver(ctx context.Context, job domain.ReminderJob, n
 	obsidianURI := "obsidian://open?" + url.Values{"vault": {vault.Name}, "file": {note.Path}}.Encode()
 	var firstErr error
 	for _, action := range trigger.Actions {
-		if action.Type != domain.AutomationTargetWebhook {
+		if action.Type != domain.AutomationTargetWebhook || slices.Contains(job.DeliveredTargets, action.ConfigID) {
 			continue
 		}
-		if err := s.webhooks.DeliverReminder(ctx, job.UID, action.ConfigID, current.Text, due, current.Timezone, vault.Name, note.Path, note.Content, obsidianURI); err != nil && firstErr == nil {
-			firstErr = err
+		checkpoint := func() error {
+			return s.jobs.Checkpoint(ctx, job.UID, job.ID, now.Add(time.Since(started)).Unix(), token, job.DeliveredTargets)
+		}
+		if err := checkpoint(); err != nil {
+			return err
+		}
+		if err := s.webhooks.DeliverReminder(ctx, job.UID, action.ConfigID, current.Text, due, current.Timezone, vault.Name, note.Path, note.Content, obsidianURI); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		job.DeliveredTargets = append(job.DeliveredTargets, action.ConfigID)
+		if err := checkpoint(); err != nil {
+			return err
 		}
 	}
 	if firstErr != nil {

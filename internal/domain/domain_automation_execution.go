@@ -33,6 +33,7 @@ type AutomationActionExecution struct {
 // the original payload only for failed executions that may be retried.
 type AutomationExecution struct {
 	ID         int64
+	Revision   int64
 	UID        int64
 	TriggerID  int64
 	VaultID    int64
@@ -59,6 +60,7 @@ type AutomationExecutionRepository interface {
 	GetByID(ctx context.Context, uid, id int64) (*AutomationExecution, error)
 	Update(ctx context.Context, execution *AutomationExecution) error
 	List(ctx context.Context, uid, triggerID int64, page, pageSize int) ([]*AutomationExecution, int64, error)
+	LatestByTrigger(ctx context.Context, uid int64) ([]*AutomationExecution, error)
 	// Cleanup removes expired execution history and bounds retained terminal
 	// records for every user. Active executions are not removed before expiry.
 	Cleanup(ctx context.Context, before time.Time, keep int) (deleted int64, err error)

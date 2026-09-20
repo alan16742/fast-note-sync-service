@@ -12,6 +12,7 @@ const TableNameAutomationExecution = "automation_execution"
 // query boundary.
 type AutomationExecution struct {
 	ID         int64      `gorm:"column:id;primaryKey"`
+	Revision   int64      `gorm:"column:revision;not null;default:0"`
 	UID        int64      `gorm:"column:uid;not null;index:idx_automation_execution_uid_created,priority:1;uniqueIndex:idx_automation_execution_event,priority:1"`
 	TriggerID  int64      `gorm:"column:trigger_id;not null;index:idx_automation_execution_trigger;uniqueIndex:idx_automation_execution_event,priority:2"`
 	VaultID    int64      `gorm:"column:vault_id;not null;index:idx_automation_execution_vault"`
