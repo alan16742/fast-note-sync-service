@@ -422,18 +422,33 @@ func (s *automationService) Publish(_ context.Context, event *domain.AutomationE
 }
 
 func (s *automationService) publishNow(ctx context.Context, event *domain.AutomationEvent) {
-	triggers, err := s.listEnabledCached(ctx, event.UID, event.Type)
-	if err != nil {
-		s.logger.Warn("load automation triggers failed", zap.Int64("uid", event.UID), zap.String("eventType", string(event.Type)), zap.Error(err))
-		return
+	eventTypes := []domain.AutomationEventType{event.Type}
+	if event.Type == domain.AutomationEventNoteContent {
+		// A Markdown note is also a file. Evaluate its path/action against file
+		// rules using the same event identity and original content payload.
+		eventTypes = append(eventTypes, domain.AutomationEventFileBehavior)
 	}
-	for _, trigger := range triggers {
-		if !automationTriggerMatches(trigger, event) {
+	matchedTriggers := make(map[int64]struct{})
+	for _, eventType := range eventTypes {
+		triggers, err := s.listEnabledCached(ctx, event.UID, eventType)
+		if err != nil {
+			s.logger.Warn("load automation triggers failed", zap.Int64("uid", event.UID), zap.String("eventType", string(eventType)), zap.Error(err))
 			continue
 		}
-		s.enrichEvent(ctx, event)
-		if err := s.executeTrigger(ctx, trigger, event); err != nil {
-			s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
+		candidate := *event
+		candidate.Type = eventType
+		for _, trigger := range triggers {
+			if _, matched := matchedTriggers[trigger.ID]; matched || !automationTriggerMatches(trigger, &candidate) {
+				continue
+			}
+			// An OR rule can match both views of the same change. Claim it before
+			// dispatch, so a failed action is not retried by the second branch.
+			matchedTriggers[trigger.ID] = struct{}{}
+			s.enrichEvent(ctx, event)
+			candidate.VaultName = event.VaultName
+			if err := s.executeTrigger(ctx, trigger, &candidate); err != nil {
+				s.logger.Warn("automation trigger dispatch failed", zap.Int64("uid", event.UID), zap.Int64("triggerID", trigger.ID), zap.String("eventID", event.ID), zap.Error(err))
+			}
 		}
 	}
 }
